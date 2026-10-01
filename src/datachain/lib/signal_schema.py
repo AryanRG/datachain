@@ -251,7 +251,7 @@ class _RecursiveModelError(Exception):
     """A model refers back to itself while its schema is being serialized."""
 
 
-def _has_erased_type_arguments(annotation: Any) -> bool:
+def _has_unpreserved_type_arguments(annotation: Any) -> bool:
     """Whether schema serialization drops a collection annotation's arguments."""
     parts = annotation_parts(annotation)
     if not parts:
@@ -261,7 +261,7 @@ def _has_erased_type_arguments(annotation: Any) -> bool:
         return True
     if is_mapping_annotation(annotation) and origin is not dict:
         return True
-    return any(_has_erased_type_arguments(part) for part in parts)
+    return any(_has_unpreserved_type_arguments(part) for part in parts)
 
 
 def _resolve_from_sys_modules(
@@ -279,6 +279,8 @@ def _resolve_from_sys_modules(
         return None
     serialized: dict[str, Any] = {}
     try:
+        # This is a read-only probe: don't register imported classes in ModelStore,
+        # and track model identities so lossy or ambiguous schemas cannot match.
         SignalSchema._serialize_custom_model(
             ct.name,
             candidate,
@@ -478,7 +480,9 @@ class SignalSchema:
             field_type = info.annotation
             # All fields should be typed.
             assert field_type
-            if serialized_models is not None and _has_erased_type_arguments(field_type):
+            if serialized_models is not None and _has_unpreserved_type_arguments(
+                field_type
+            ):
                 raise _ErasedTypeArgumentsError(field_type)
             fields[field_name] = SignalSchema._serialize_type(
                 field_type,
