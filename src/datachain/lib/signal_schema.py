@@ -44,6 +44,7 @@ from sqlalchemy.sql.visitors import iterate, replacement_traverse
 from datachain import json
 from datachain.func import literal
 from datachain.func.func import Func
+from datachain.lib.convert.flatten import iter_field_columns
 from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.convert.sql_to_python import sql_to_python
 from datachain.lib.convert.unflatten import (
@@ -81,6 +82,7 @@ if TYPE_CHECKING:
     from collections.abc import MutableMapping
 
     from datachain.catalog import Catalog
+    from datachain.dataset import RowDict
     from datachain.lib.data_model import UnionLayout
 
 
@@ -396,7 +398,7 @@ class SignalSchema:
         return version_name
 
     @staticmethod
-    def _serialize_type(fr: type, custom_types: dict[str, Any]) -> str:
+    def _serialize_type(fr: Any, custom_types: dict[str, Any]) -> str:
         """Serialize a given type to a string, including automatic ModelStore
         registration, and save this type and subtypes to custom_types as well."""
         subtypes: list[Any] = []
@@ -671,7 +673,7 @@ class SignalSchema:
             value = convert_scalar(anno, value)
         return value, pos + 1
 
-    def row_to_objs(self, row: Sequence[Any]) -> list[Any]:
+    def row_to_objs(self, row_dict: "RowDict") -> list[Any]:
         self._init_setup_values()
 
         def build_model(fr: type[BaseModel], j: dict) -> Any:
@@ -684,7 +686,6 @@ class SignalSchema:
                 raise
 
         objs: list[Any] = []
-        pos = 0
         for name, fr_type in self.values.items():
             if self.setup_values and name in self.setup_values:
                 objs.append(self.setup_values.get(name))
@@ -694,9 +695,8 @@ class SignalSchema:
                 if self._row_conversion_required[name]
                 else None
             )
-            obj, pos = self._read_top_signal(
-                fr_type, row, pos, build_model, convert_scalar
-            )
+            row = self._signal_row_values(name, fr_type, row_dict)
+            obj, _ = self._read_top_signal(fr_type, row, 0, build_model, convert_scalar)
             objs.append(obj)
         return objs
 
@@ -806,6 +806,19 @@ class SignalSchema:
         if getattr(model, "__pydantic_complete__", True):
             _FILE_BEARING_FIELDS[model] = fields
         return fields
+
+    @staticmethod
+    def _signal_row_values(
+        name: str,
+        annotation: DataType,
+        row_dict: "RowDict",
+    ) -> list[Any]:
+        """Read a signal's named columns in the order used by the row decoder."""
+        result = []
+        for col in iter_field_columns(annotation, tuple(name.split("."))):
+            path = (*col.path, TYPE_TAG_FIELD) if col.is_sentinel else col.path
+            result.append(row_dict[DEFAULT_DELIMITER.join(path)])
+        return result
 
     @staticmethod
     def _all_values_none(value: Any) -> bool:
@@ -1003,7 +1016,7 @@ class SignalSchema:
         catalog: "Catalog",
         cache: bool = False,
         download_cb: Callback = DEFAULT_CALLBACK,
-        annotation: DataType | None = None,
+        annotation: Any = None,
         _seen: set[int] | None = None,
     ) -> None:
         seen = _seen if _seen is not None else set()

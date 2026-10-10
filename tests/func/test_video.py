@@ -442,7 +442,7 @@ def test_get_info_uses_base_rate_when_average_rate_is_missing(
 ):
     with av.open(str(nut_video_without_average_rate.path)) as container:
         stream = container.streams.video[0]
-        assert stream.average_rate is None
+        assert not stream.average_rate
         assert stream.base_rate == 5
 
     info = nut_video_without_average_rate.file.get_info()
@@ -1058,6 +1058,30 @@ def test_save_fragment(tmp_path, video_file):
         "format": "mov,mp4,m4a,3gp,3g2,mj2",
         "codec": "h264",
     }
+
+
+@requires_ffmpeg
+def test_save_fragment_same_stem_in_different_dirs(tmp_path, video_file):
+    data = video_file.read_bytes()
+    videos = [File.upload(data, f"{task}/0.mp4").as_video_file() for task in ("a", "b")]
+    out = tmp_path / "out"
+
+    paths = {video.get_fragment(0, 1).save(str(out)).path for video in videos}
+
+    assert len(paths) == 2
+    assert len(os.listdir(out)) == 2
+
+
+@requires_ffmpeg
+def test_save_fragment_name_is_deterministic(tmp_path, video_file):
+    fragment = video_file.as_video_file().get_fragment(2.5, 5)
+
+    first = fragment.save(str(tmp_path))
+    second = fragment.save(str(tmp_path))
+
+    assert first.path == second.path
+    assert first.name.startswith("Big_Buck_Bunny_360_10s_1MB_")
+    assert first.name.endswith("_002500_005000.mp4")
 
 
 @requires_ffmpeg

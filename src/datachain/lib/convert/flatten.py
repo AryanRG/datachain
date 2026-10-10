@@ -46,10 +46,10 @@ def iter_flat_columns(
     """Flat columns ``model`` emits, in storage order; a tagged-union node yields a
     leading _type_tag then its arms."""
     for name, f_info in model.model_fields.items():
-        yield from _iter_field_columns(f_info.annotation, (*_prefix, name))
+        yield from iter_field_columns(f_info.annotation, (*_prefix, name))
 
 
-def _iter_field_columns(anno: Any, path: tuple[str, ...]) -> Iterator[FlatColumn]:
+def iter_field_columns(anno: Any, path: tuple[str, ...]) -> Iterator[FlatColumn]:
     if (layout := union_layout(anno)) is not None:
         yield FlatColumn(path, True)  # _type_tag
         for arm in layout.arms:

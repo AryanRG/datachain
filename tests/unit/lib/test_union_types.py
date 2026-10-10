@@ -13,6 +13,7 @@ from typing import Literal, Optional, Union
 
 import pytest
 
+from datachain.dataset import RowDict
 from datachain.error import OutdatedDatasetFormatError
 from datachain.lib.arrow import _union_value
 from datachain.lib.convert.flatten import flatten, flatten_value
@@ -320,7 +321,8 @@ def test_nested_union_reads_the_tagged_arm():
         pet: Cat | Dog
 
     row = flatten(Holder(pet=Dog(name="fido")))
-    (holder,) = SignalSchema({"h": Holder}).row_to_objs(row)
+    schema = SignalSchema({"h": Holder})
+    (holder,) = schema.row_to_objs(RowDict(zip(schema.to_udf_spec(), row, strict=True)))
     assert holder.pet == Dog(name="fido")
 
 
@@ -404,8 +406,12 @@ def test_single_arm_unknown_tag_reads_none():
 def test_multi_arm_unknown_tag_errors():
     schema = SignalSchema({"v": int | str})
     with pytest.raises(OutdatedDatasetFormatError, match="unknown _type_tag 'Gone'"):
-        schema.row_to_objs(("Gone", 42, None))
-    assert schema.row_to_objs((None, None, None)) == [None]
+        schema.row_to_objs(
+            RowDict(zip(schema.to_udf_spec(), ("Gone", 42, None), strict=True))
+        )
+    assert schema.row_to_objs(
+        RowDict(zip(schema.to_udf_spec(), (None, None, None), strict=True))
+    ) == [None]
 
 
 @pytest.fixture
@@ -422,9 +428,13 @@ def test_index_tag_reads_optional_model(unwarned_index_tag):
     assert (got.a, got.b) == (7, "z")
 
     schema = SignalSchema({"m": Foo | None})
-    assert schema.row_to_objs((0, 7, "z")) == [Foo(a=7, b="z")]
+    assert schema.row_to_objs(
+        RowDict(zip(schema.to_udf_spec(), (0, 7, "z"), strict=True))
+    ) == [Foo(a=7, b="z")]
     # any other index is the absent arm
-    assert schema.row_to_objs((1, 7, "z")) == [None]
+    assert schema.row_to_objs(
+        RowDict(zip(schema.to_udf_spec(), (1, 7, "z"), strict=True))
+    ) == [None]
     assert _union_value({"v._type_tag": 1, "v.a": 7}, layout, "v") is None
 
 
@@ -432,7 +442,9 @@ def test_index_tag_rejected_multi_arm(unwarned_index_tag):
     # only the single-arm layout is ever stored with an index
     schema = SignalSchema({"value": int | str})
     with pytest.raises(OutdatedDatasetFormatError, match="unknown _type_tag 0"):
-        schema.row_to_objs((0, 42, None))
+        schema.row_to_objs(
+            RowDict(zip(schema.to_udf_spec(), (0, 42, None), strict=True))
+        )
 
 
 def test_arm_display_path_passes_through_unknown_paths():

@@ -805,3 +805,19 @@ def test_union_arm_name_collision_errors(test_session):
     with pytest.raises(DataChainColumnError, match="same export column"):
         with closing(sqlite3.connect(":memory:")) as conn:
             chain.to_database("t", conn)
+
+
+def test_union_udf_parent_and_child_overlap(test_session):
+    def describe(number, value):
+        return f"{number}:{value}"
+
+    chain = dc.read_values(
+        value=[1, "a"], output={"value": int | str}, session=test_session
+    )
+    assert list(
+        chain.map(
+            result=describe,
+            params=["value.int", "value"],
+            output=str,
+        ).to_values("result")
+    ) == ["1:1", "None:a"]

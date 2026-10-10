@@ -148,9 +148,6 @@ class AbstractMetastore(ABC, Serializable):
     def cleanup_tables(self, temp_table_names: list[str]) -> None:
         """Cleanup temp tables."""
 
-    def cleanup_for_tests(self) -> None:
-        """Cleanup for tests."""
-
     #
     # Namespaces
     #
@@ -333,6 +330,13 @@ class AbstractMetastore(ABC, Serializable):
         """Updates dataset version fields. When ``expected_status`` is given
         the UPDATE only applies if the row's current status equals that value;
         returns None if no row matched."""
+
+    def record_dataset_version_access(
+        self,
+        dataset: DatasetRecord,
+        version: str,
+    ) -> None:
+        """Record that a dataset version was accessed."""
 
     @abstractmethod
     def remove_dataset_version(
