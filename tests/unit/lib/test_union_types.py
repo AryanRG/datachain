@@ -444,9 +444,21 @@ def test_single_arm_reads_the_arm_under_any_tag_name():
     assert _union_value({"v._type_tag": ""}, layout, "v") is None  # CH NULL tag
 
 
+def test_arm_name_wins_over_a_field_of_the_same_name():
+    class Left(DataModel):
+        value: int = 0
+
+    class Right(DataModel):
+        Left: str = ""  # noqa: N815
+
+    schema = SignalSchema({"v": Left | Right})
+    assert schema.resolve_arm_path("v.Left.value") == "v.Left.value"
+    assert schema.to_db_col("v.Left.value") == "v__Left__value"
+
+
 def test_multi_arm_unknown_tag_errors():
     schema = SignalSchema({"v": int | str})
-    with pytest.raises(OutdatedDatasetFormatError, match="unknown _type_tag 'Gone'"):
+    with pytest.raises(DataChainParamsError, match="not one of the declared Union"):
         schema.row_to_objs(
             RowDict(zip(schema.to_udf_spec(), ("Gone", 42, None), strict=True))
         )

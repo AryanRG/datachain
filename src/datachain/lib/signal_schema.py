@@ -1094,6 +1094,8 @@ class SignalSchema:
         db = self.to_db_col(col_name)
         if db != col_name:
             return self.get_column_type(db, with_subtree=with_subtree)
+        if (err := self.multiarm_root_error(col_name)) is not None:
+            raise err
         raise SignalResolvingError([col_name], "is not found")
 
     def is_nullable_column(self, db_col: str, anno: DataType) -> bool:
@@ -1215,6 +1217,8 @@ class SignalSchema:
         if curr_type is None or i < len(path):
             # If we reached the end of the path and didn't find a type,
             # or if we didn't traverse the entire path, raise an error.
+            if (err := self.multiarm_root_error(".".join(path))) is not None:
+                raise err
             raise SignalResolvingError(path, "is not found")
 
         return curr_type
@@ -1312,13 +1316,13 @@ class SignalSchema:
         self, layout: "UnionLayout", segment: str
     ) -> tuple[int | None, DataType | None, int]:
         """The single arm ``segment`` selects, by arm type name (consumes it) or a
-        model field name (does not). Strict: raises if it matches >1 arm. Returns
-        ``(index, arm, consumed)``; index None when nothing matches."""
+        model field name (does not). An arm name wins; an ambiguous field raises.
+        Returns ``(index, arm, consumed)``; index None when nothing matches."""
+        # an arm name is exact and unique, so it wins over any field of that name
+        for idx, arm in enumerate(layout.arms):
+            if arm_selector(arm) == segment:
+                return idx, arm, 1
         matches = [
-            (idx, arm, 1)
-            for idx, arm in enumerate(layout.arms)
-            if arm_selector(arm) == segment
-        ] + [
             (idx, arm, 0)
             for idx, arm in enumerate(layout.arms)
             if (fr := ModelStore.to_pydantic(arm)) is not None
@@ -1604,7 +1608,10 @@ class SignalSchema:
                 new_values[name] = value
 
             if C.is_nested(name):
-                if current_type != new_values[name]:
+                widened = self.multiarm_union_root(name) is not None and (
+                    unwrap_optional(new_values[name])[0] == current_type
+                )
+                if current_type != new_values[name] and not widened:
                     msg = (
                         f"Altering nested column type is not allowed: {name}, "
                         f"current type: {current_type}, new type: {new_values[name]}"

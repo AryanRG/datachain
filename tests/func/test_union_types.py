@@ -563,6 +563,22 @@ def test_merge_widens_union_on_the_padded_side(test_session):
     assert merged.signals_schema.values["value"] == int | str | None
 
 
+def test_union_root_in_a_func_names_the_arms(test_session):
+    chain = dc.read_values(
+        id=[1], v=[1], output={"id": int, "v": int | str}, session=test_session
+    )
+    with pytest.raises(DataChainColumnError, match="no single column"):
+        chain.group_by(t=func.sum("v"), partition_by="id").to_records()
+
+
+def test_mutate_on_an_arm_column(test_session):
+    chain = dc.read_values(
+        id=[1, 2], v=[1, "a"], output={"id": int, "v": int | str}, session=test_session
+    )
+    rows = chain.mutate(v__int=C("v.int") + 1).order_by("id").to_records()
+    assert [r["v__int"] for r in rows] == [2, None]
+
+
 def test_union_cannot_be_a_diff_or_subtract_key(test_session):
     def chain():
         return dc.read_values(

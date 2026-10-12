@@ -329,14 +329,28 @@ def arm_for_tag(layout: "UnionLayout", tag: Any) -> Any:
     if not isinstance(tag, str):
         return _arm_for_index_tag(layout, tag)
     if layout.use_slots:
-        raise _unknown_tag_error(layout, tag)
+        raise _arm_mismatch_error(layout, tag)
     # a single arm needs no name match; '' is a NULL tag on ClickHouse
     return layout.arms[0] if tag else None
 
 
+def _arm_names(layout: "UnionLayout") -> str:
+    return ", ".join(arm_selector(arm) for arm in layout.arms)
+
+
+def _arm_mismatch_error(layout: "UnionLayout", tag: Any) -> DataChainParamsError:
+    """A stored name that is not one of the declared arms: the data holds a type the
+    declared Union does not list, so nothing can be read into it."""
+    return DataChainParamsError(
+        f"stored type {tag!r} is not one of the declared Union arms "
+        f"({_arm_names(layout)}); the declared type does not match the data"
+    )
+
+
 def _unknown_tag_error(layout: "UnionLayout", tag: Any) -> OutdatedDatasetFormatError:
-    names = ", ".join(arm_selector(arm) for arm in layout.arms)
-    return OutdatedDatasetFormatError(f"unknown _type_tag {tag!r}: expected {names}")
+    return OutdatedDatasetFormatError(
+        f"unknown _type_tag {tag!r}: expected {_arm_names(layout)}"
+    )
 
 
 # Index layout, read-only and deprecated (removal: #1949): only ever stored

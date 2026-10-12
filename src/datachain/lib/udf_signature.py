@@ -11,7 +11,12 @@ from datachain.lib.data_model import (
 )
 from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.udf import UDFBase, reject_var_params
-from datachain.lib.utils import AbstractUDF, DataChainParamsError, callable_name
+from datachain.lib.utils import (
+    AbstractUDF,
+    DataChainParamsError,
+    callable_name,
+    type_to_str,
+)
 
 
 class UdfSignatureError(DataChainParamsError):
@@ -150,7 +155,7 @@ class UdfSignature:  # noqa: PLW1641
         if not is_chain_type(anno):
             raise UdfSignatureError(
                 chain,
-                f"output type '{getattr(anno, '__name__', anno)}' of signal"
+                f"output type '{type_to_str(anno)}' of signal"
                 f" '{signal}' is not supported."
                 f" Please use DataModel types: {DataTypeNames}",
             )
