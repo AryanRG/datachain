@@ -1942,6 +1942,11 @@ class VideoFragment(DataModel):
         If ``destination`` is a remote path, the video file will be uploaded
         to remote storage.
 
+        The output is named ``{stem}_{hash}_{start_ms}_{end_ms}.{format}``, where
+        ``hash`` is derived from the source video's ``source`` and ``path``, so
+        videos with the same name in different directories don't overwrite each
+        other.
+
         Args:
             destination: Output directory path or URI (e.g. ``s3://…``, ``gs://…``).
             format: Output video format (e.g., 'mp4', 'avi').
@@ -2066,20 +2071,41 @@ class ArrowRow(DataModel):
     @contextmanager
     def open(self):
         """Stream row contents from indexed file."""
-        from pyarrow.dataset import dataset
+        from pyarrow.csv import ParseOptions, ReadOptions
+        from pyarrow.dataset import CsvFileFormat, dataset
+
+        from datachain.lib.arrow import fix_pyarrow_format
+
+        kwargs = dict(self.kwargs)
+        if csv := kwargs.pop("csv", None):
+            parse = ParseOptions(**csv["parse_options"])
+            if csv.get("skip_invalid_rows"):
+                parse.invalid_row_handler = lambda _row: "skip"
+            kwargs["format"] = fix_pyarrow_format(
+                CsvFileFormat(
+                    read_options=ReadOptions(**csv["read_options"]),
+                    parse_options=parse,
+                ),
+                parse,
+            )
 
         if self.file._caching_enabled:
             self.file.ensure_cached()
             path = self.file.get_local_path()
-            ds = dataset(path, **self.kwargs)
+            ds = dataset(path, **kwargs)
         else:
             path = self.file.get_fs_path()
-            ds = dataset(path, filesystem=self.file.get_fs(), **self.kwargs)
+            ds = dataset(path, filesystem=self.file.get_fs(), **kwargs)
 
         return ds.take([self.index]).to_reader()
 
     def read(self):
-        """Returns row contents as dict."""
+        """Returns row contents as dict.
+
+        Best effort, with no guarantee to match the stored row: it parses the
+        file again from the start up to this row, and not every reader option is
+        kept, e.g. column types.
+        """
         with self.open() as record_batch:
             return record_batch.to_pylist()[0]
 
