@@ -1231,6 +1231,30 @@ class SignalSchema:
             return f"{db_col}{DEFAULT_DELIMITER}{self._TYPE_TAG_FIELD}"
         return None
 
+    def infer_type_tags(self, flat: dict[str, Any]) -> None:
+        """Fill a pre-flattened record's missing ``_type_tag`` from the arm columns
+        carrying a value: ``to_records()`` hides it, so a round trip rebuilds it."""
+        for prefix, layout in self._tagged_db_cols.items():
+            tag_col = f"{prefix}{DEFAULT_DELIMITER}{self._TYPE_TAG_FIELD}"
+            if tag_col in flat:
+                continue
+            for arm in layout.arms:
+                arm_col = (
+                    f"{prefix}{DEFAULT_DELIMITER}{arm_selector(arm)}"
+                    if layout.use_slots
+                    else prefix
+                )
+                if any(
+                    value is not None
+                    and name != tag_col
+                    and (
+                        name == arm_col or name.startswith(arm_col + DEFAULT_DELIMITER)
+                    )
+                    for name, value in flat.items()
+                ):
+                    flat[tag_col] = arm_selector(arm)
+                    break
+
     def enclosing_type_tag(self, db_col: str) -> str | None:
         """DB name of the ``_type_tag`` discriminator for the closest tagged-union
         ancestor of leaf ``db_col``, or None when ``db_col`` is not such a leaf (or is

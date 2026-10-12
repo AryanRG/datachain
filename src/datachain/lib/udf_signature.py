@@ -135,11 +135,25 @@ class UdfSignature:  # noqa: PLW1641
             else:
                 udf_output_map = {signal_name: func_outs_sign[0]}
 
+        for signal, anno in udf_output_map.items():
+            UdfSignature._validate_type(chain, signal, anno)
+
         return cls(
             func=udf_func,
             params=udf_params,
             output_schema=SignalSchema(udf_output_map),
         )
+
+    @staticmethod
+    def _validate_type(chain, signal: str, anno) -> None:
+        validate_chain_type(anno)
+        if not is_chain_type(anno):
+            raise UdfSignatureError(
+                chain,
+                f"output type '{getattr(anno, '__name__', anno)}' of signal"
+                f" '{signal}' is not supported."
+                f" Please use DataModel types: {DataTypeNames}",
+            )
 
     @staticmethod
     def _validate_output(chain, signal_name, func, func_outs_sign, output):
@@ -158,22 +172,13 @@ class UdfSignature:  # noqa: PLW1641
 
             udf_output_map = dict(zip(output, func_outs_sign, strict=False))
         elif isinstance(output, dict):
-            for key, value in output.items():
+            for key in output:
                 if not isinstance(key, str):
                     raise UdfSignatureError(
                         chain,
                         f"output signal '{key}' has type '{type(key)}'"
                         " while 'str' is expected",
                     )
-                validate_chain_type(value)
-                if not is_chain_type(value):
-                    raise UdfSignatureError(
-                        chain,
-                        f"output type '{getattr(value, '__name__', value)}' of"
-                        f" signal '{key}' is not"
-                        f" supported. Please use DataModel types: {DataTypeNames}",
-                    )
-
             udf_output_map = output
         else:
             validate_chain_type(output)

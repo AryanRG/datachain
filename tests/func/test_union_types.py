@@ -98,13 +98,29 @@ def test_list_of_model_union_rejected(test_session):
         )
 
 
-def test_read_records_preflattened_union_key_errors(test_session):
-    with pytest.raises(DataChainParamsError, match="pre-flatten a multi-arm Union"):
-        dc.read_records(
-            [{"v__int": 99}],
-            schema={"v": int | str},
-            session=test_session,
-        ).save("u_rec_pf")
+def test_read_records_preflattened_union_key(test_session):
+    chain = dc.read_records(
+        [{"v__int": 99}, {"v__str": "z"}, {}],
+        schema={"v": int | str | None},
+        session=test_session,
+    )
+    assert sorted(chain.to_values("v"), key=lambda v: (v is None, str(v))) == [
+        99,
+        "z",
+        None,
+    ]
+
+
+def test_records_round_trip_union_inside_model(test_session):
+    covers = [_Holder(id=1, payload=7), _Holder(id=2, payload="z")]
+    records = dc.read_values(m=covers, session=test_session).to_records()
+    back = dc.read_records(records, schema={"m": _Holder}, session=test_session)
+    assert sorted(back.to_values("m"), key=lambda m: m.id) == covers
+
+
+def test_read_records_rejects_unsupported_schema_type(test_session):
+    with pytest.raises(DataChainParamsError, match="is not supported"):
+        dc.read_records([], schema={"v": str | list[str]}, session=test_session)
 
 
 def test_read_records_model_union(test_session):
@@ -545,6 +561,17 @@ def test_merge_widens_union_on_the_padded_side(test_session):
 
     assert _ordered(merged, "value") == [(1, "x"), (2, None)]
     assert merged.signals_schema.values["value"] == int | str | None
+
+
+def test_return_annotation_gets_the_same_type_check(test_session):
+    def f(id) -> list[_Cat | _Dog]:
+        return [_Cat(name="c")]
+
+    chain = dc.read_values(id=[1], session=test_session)
+    with pytest.raises(DataChainParamsError, match="is not supported"):
+        chain.map(x=f)
+    with pytest.raises(DataChainParamsError, match="is not supported"):
+        chain.map(x=f, output=list[_Cat | _Dog])
 
 
 def test_group_by_union_with_model_arms(test_session):
