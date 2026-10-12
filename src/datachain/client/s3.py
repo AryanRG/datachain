@@ -7,6 +7,7 @@ from xml.etree.ElementTree import Element, fromstring, tostring
 
 from aiobotocore.parsers import AioResponseParserFactory, AioRestXMLParser
 from aiobotocore.session import AioSession
+from botocore import handlers
 from botocore.exceptions import NoCredentialsError
 from botocore.model import Shape
 from botocore.utils import parse_timestamp
@@ -29,6 +30,7 @@ def _parse_timestamp(value: Any) -> datetime:
 
 _NS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
 _LISTINGS = ("ListObjectsV2Output", "ListObjectVersionsOutput")
+_LISTING_OPS = ("ListObjectsV2", "ListObjectVersions")
 
 
 _SCALARS: dict[str, Callable[[str], Any]] = {
@@ -99,6 +101,18 @@ class _ParserFactory(AioResponseParserFactory):
         return super().create_parser(protocol_name)
 
 
+def _handle_200_error(operation_model, response_dict, **kwargs) -> None:
+    """botocore's check, but a listing body is not parsed twice: only its end tag."""
+    if getattr(operation_model, "name", "") not in _LISTING_OPS:
+        handlers._handle_200_error(operation_model, response_dict, **kwargs)
+    elif (
+        response_dict
+        and response_dict["status_code"] == 200
+        and not response_dict["body"].rstrip().endswith(b"Result>")
+    ):
+        response_dict["status_code"] = 500
+
+
 @functools.cache
 def _session(profile: str | None) -> AioSession:
     """One per profile, so fsspec reuses filesystem instances."""
@@ -106,6 +120,9 @@ def _session(profile: str | None) -> AioSession:
     factory = _ParserFactory()
     factory.set_parser_defaults(timestamp_parser=_parse_timestamp)
     session.register_component("response_parser_factory", factory)
+    # avoid parsing every listing page twice
+    session.unregister("before-parse.s3.*", handlers._handle_200_error)
+    session.register("before-parse.s3.*", _handle_200_error)
     return session
 
 

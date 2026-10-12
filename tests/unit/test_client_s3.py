@@ -1,7 +1,8 @@
+import botocore.session
 import pytest
 from botocore.utils import parse_timestamp
 
-from datachain.client.s3 import ClientS3, _parse_timestamp
+from datachain.client.s3 import ClientS3, _handle_200_error, _parse_timestamp
 from datachain.client.writeconfig import WriteConfig
 from datachain.node import DirType, Node
 from datachain.nodes_thread_pool import NodeChunk
@@ -161,3 +162,26 @@ def test_listing_parser_matches_botocore(operation):
     response = {"status_code": 200, "headers": {}, "body": body}
     expected = sync(get_loop(), AioRestXMLParser().parse, response, shape)
     assert sync(get_loop(), _ListingParser().parse, response, shape) == expected
+
+
+LIST_BODY = (
+    b'<?xml version="1.0" encoding="UTF-8"?>\n<ListBucketResult><Name>b</Name>'
+    b"<Contents><Key>a</Key></Contents></ListBucketResult>\n"
+)
+
+
+@pytest.mark.parametrize(
+    "operation,body,status",
+    [
+        ("ListObjectsV2", LIST_BODY, 200),
+        ("ListObjectsV2", LIST_BODY[:-30], 500),  # truncated
+        ("ListObjectVersions", b"<Error><Code>InternalError</Code></Error>", 500),
+        ("CompleteMultipartUpload", b"<Error><Code>InternalError</Code></Error>", 500),
+        ("CompleteMultipartUpload", b"<CompleteMultipartUploadResult/>", 200),
+    ],
+)
+def test_200_error_check(operation, body, status):
+    model = botocore.session.get_session().get_service_model("s3")
+    response = {"status_code": 200, "body": body, "headers": {}}
+    _handle_200_error(model.operation_model(operation), response)
+    assert response["status_code"] == status
