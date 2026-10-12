@@ -266,7 +266,7 @@ class AzureClient(Client):
         ) as container:
             # raw page XML: the SDK's deserializer is most of the listing's CPU
             pages = container.list_blob_names(
-                include=["versions"],
+                include=["versions"] if self._is_version_aware() else None,
                 name_starts_with=prefix,
                 results_per_page=self.LIST_PAGE_SIZE,
                 **kwargs,
