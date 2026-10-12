@@ -9,7 +9,7 @@ round-trips for every union kind (basic/basic, model/model, mixed, nullable).
 
 import copy
 from datetime import datetime
-from typing import Literal, Optional, Union
+from typing import Generic, Literal, Optional, TypeVar, Union
 
 import pytest
 
@@ -455,6 +455,26 @@ def test_arm_name_wins_over_a_field_of_the_same_name():
     schema = SignalSchema({"v": Left | Right})
     assert schema.resolve_arm_path("v.Left.value") == "v.Left.value"
     assert schema.to_db_col("v.Left.value") == "v__Left__value"
+
+
+def test_same_named_arms_answer_false_instead_of_raising():
+    first = type("Dup", (DataModel,), {"__annotations__": {"a": int}, "a": 0})
+    second = type("Dup", (DataModel,), {"__annotations__": {"b": int}, "b": 0})
+
+    assert is_chain_type(first | second) is False
+    with pytest.raises(DataChainParamsError, match="indistinguishable arms"):
+        validate_chain_type(first | second)
+
+
+def test_parameterized_model_arm_rejected():
+    T = TypeVar("T")
+
+    class Box(DataModel, Generic[T]):
+        v: int = 0
+
+    assert is_chain_type(Box[int] | str) is False
+    with pytest.raises(DataChainParamsError, match="cannot name a column"):
+        validate_chain_type(Box[int] | str)
 
 
 def test_legacy_tag_dataset_rejected():

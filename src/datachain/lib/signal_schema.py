@@ -847,6 +847,8 @@ class SignalSchema:
 
     def get_file_signal(self) -> str | None:
         for signal_name, signal_type in self.values.items():
+            if union_layout(signal_type) is not None:
+                continue  # a union has no single file column to export from
             if (fr := ModelStore.to_pydantic(signal_type)) is not None and issubclass(
                 fr, File
             ):
@@ -1346,7 +1348,8 @@ class SignalSchema:
             raise SignalResolvingError(
                 [segment],
                 f"is ambiguous across union arms ({names}); reference it with a "
-                "type-qualified path like '<signal>.<ArmType>.<field>'",
+                "type-qualified path like '<signal>.<ArmType>' or "
+                "'<signal>.<ArmType>.<field>'",
             )
         if matches:
             return matches[0]

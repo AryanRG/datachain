@@ -294,6 +294,13 @@ def _union_layout(anno: Any) -> "UnionLayout | None":
         # each arm is a column named by its type; those names must be unique and
         # must not shadow the discriminator column
         slots = [arm_selector(arm) for arm in arms]
+        for slot in slots:
+            # the slot names a column, e.g. a parameterized `Box[int]` cannot
+            if not slot.isidentifier():
+                raise DataChainParamsError(
+                    f"Union arm {slot!r} cannot name a column; use a plain "
+                    "DataModel instead of a parameterized one"
+                )
         if len(set(slots)) != len(slots):
             dup = next(s for s in slots if slots.count(s) > 1)
             raise DataChainParamsError(
@@ -429,7 +436,11 @@ def _is_chain_container_type(t: type) -> bool:
     arms, _ = union_arms(t)
     if len(arms) >= 2:
         # multi-arm union: supported only as a tagged union (scalar/DataModel arms)
-        return union_layout(t) is not None and all(is_chain_type(arm) for arm in arms)
+        try:
+            layout = union_layout(t)
+        except DataChainParamsError:  # indistinguishable arms; validate_* explains
+            return False
+        return layout is not None and all(is_chain_type(arm) for arm in arms)
 
     orig, args = get_origin(t), get_args(t)
     if orig is list and len(args) == 1:
@@ -466,6 +477,7 @@ def validate_chain_type(anno: Any) -> None:
         inner, _ = unwrap_optional(current)
         arms, _ = union_arms(inner)
         if len(arms) >= 2:
+            union_layout(inner)  # raises with the reason a layout is impossible
             if collection:
                 _reject_same_json_scalars(arms, collection, where)
             if collection and not in_model:
