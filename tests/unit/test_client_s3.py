@@ -2,6 +2,7 @@ import inspect
 import pickle
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest.mock import AsyncMock, MagicMock
 
 import botocore.session
 import pytest
@@ -195,6 +196,32 @@ def test_200_error_check(operation, body, status):
     response = {"status_code": 200, "body": body, "headers": {}}
     _handle_200_error(model.operation_model(operation), response)
     assert response["status_code"] == status
+
+
+@pytest.mark.parametrize(
+    "bucket, in_order", [("bucket", True), ("bucket--usw2-az1--x-s3", False)]
+)
+def test_directory_buckets_list_out_of_key_order(bucket, in_order):
+    assert ClientS3(bucket, {}, None)._lists_in_key_order() is in_order
+
+
+@pytest.mark.parametrize("versions", [False, True])
+@pytest.mark.parametrize("requester_pays", [False, True])
+def test_listing_pays_as_requester_when_asked(versions, requester_pays):
+    s3 = MagicMock()
+    s3.list_objects_v2 = s3.list_object_versions = AsyncMock(return_value={})
+    client = ClientS3("bucket", {}, None)
+    client._fs = MagicMock(
+        version_aware=versions,
+        req_kw={"RequestPayer": "requester"} if requester_pays else {},
+        set_session=AsyncMock(),
+        get_s3=AsyncMock(return_value=s3),
+    )
+
+    sync(get_loop(), client._list_page, "", "", None, lambda _: True)
+
+    sent = s3.list_objects_v2.call_args.kwargs
+    assert sent.get("RequestPayer") == ("requester" if requester_pays else None)
 
 
 def test_listing_fields_are_kept_once_per_shape_name():
