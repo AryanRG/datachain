@@ -10,6 +10,7 @@ nullable-object coverage in one place.
 
 import copy
 import io
+import sys
 from typing import Annotated, Optional, Union
 
 import pytest
@@ -399,4 +400,6 @@ def test_nested_optional_datamodel_roundtrip():
 def test_classify_field_handles_unhashable_annotations():
     unhashable = Annotated[int, []]
     assert classify_field(unhashable) == FieldKind(unhashable, False, False)
-    assert classify_field(Optional[unhashable]) == FieldKind(unhashable, True, False)
+    if sys.version_info >= (3, 11):  # unhashable in 3.10
+        optional = Optional[unhashable]
+        assert classify_field(optional) == FieldKind(unhashable, True, False)

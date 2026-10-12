@@ -329,13 +329,12 @@ class File(DataModel):
         res["last_modified"] = str(res["last_modified"])
         return res
 
-    if TYPE_CHECKING:
-        _caching_enabled: bool
-        _download_cb: Callback
-        _fs_path_cache: tuple[str, str, str] | None
-
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        # not in the class body: the pydantic mypy plugin makes them fields
+        self._caching_enabled: bool
+        self._download_cb: Callback
+        self._fs_path_cache: tuple[str, str, str] | None
         # one dict update: pydantic's __setattr__ is slow, and listings build millions
         self.__dict__.update(
             _catalog=None,
