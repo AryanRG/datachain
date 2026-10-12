@@ -895,6 +895,11 @@ class SQLiteWarehouse(AbstractWarehouse):
 
         select_ids = query.with_only_columns(col_id)
         ids = self.db.execute(select_ids).fetchall()
+        # without LIMIT/OFFSET a batch is a sys__id range: binding thousands of
+        # ids per batch dominates the copy
+        use_range = query._limit_clause is None and query._offset_clause is None
+        if use_range:
+            ids.sort()
 
         if preserve_sys_ids:
             select_q = query.offset(None).limit(None)
@@ -909,8 +914,12 @@ class SQLiteWarehouse(AbstractWarehouse):
 
         for batch in batched_it(ids, self.INSERT_BATCH_SIZE):
             batch_ids = [row[0] for row in batch]
-            select_q._where_criteria = (col_id.in_(batch_ids),)
-            q = table.insert().from_select(list(select_q.selected_columns), select_q)
+            if use_range:
+                batch_q = select_q.where(col_id.between(batch_ids[0], batch_ids[-1]))
+            else:
+                batch_q = select_q
+                batch_q._where_criteria = (col_id.in_(batch_ids),)
+            q = table.insert().from_select(list(batch_q.selected_columns), batch_q)
 
             self.db.execute(q)
 

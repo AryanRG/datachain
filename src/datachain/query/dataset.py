@@ -484,6 +484,13 @@ def adjust_outputs(
             row[col_name] = default_value
             continue
 
+        if (
+            type(row_val) is col_python_type
+            and col_python_type not in (list, dict)
+            and col_type_name != "JSON"
+        ):
+            continue
+
         # Validate and convert type if needed and possible
         try:
             row[col_name] = warehouse.convert_type(

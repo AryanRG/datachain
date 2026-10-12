@@ -6390,3 +6390,25 @@ def test_tuple_of_models_stores_numpy_held_in_a_field(test_session):
             ),
         )
     ]
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda chain: chain.filter(C("n") % 3 == 0),
+        # rows picked by a scrambled order are not a contiguous sys__id range
+        lambda chain: chain.order_by("k").offset(5).limit(11),
+    ],
+    ids=["filter", "offset-limit"],
+)
+def test_save_copies_exact_rows_in_batches(test_session, monkeypatch, build):
+    monkeypatch.setattr(type(test_session.catalog.warehouse), "INSERT_BATCH_SIZE", 4)
+    n = list(range(40))
+    chain = build(dc.read_values(n=n, k=[i * 7 % 40 for i in n], session=test_session))
+    expected = sorted(chain.to_values("n"))
+
+    chain.save("batched")
+
+    assert sorted(dc.read_dataset("batched", session=test_session).to_values("n")) == (
+        expected
+    )

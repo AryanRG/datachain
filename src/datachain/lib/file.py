@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
-from functools import partial
+from functools import lru_cache, partial
 from io import BytesIO
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
@@ -43,6 +43,12 @@ sha256 = partial(hashlib.sha256, usedforsecurity=False)
 logger = logging.getLogger("datachain")
 
 _SOURCE_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+
+
+@lru_cache(maxsize=1024)
+def _has_scheme(source: str) -> bool:
+    return bool(_SOURCE_SCHEME_RE.match(source))
+
 
 # how to create file path when exporting
 ExportPlacement = Literal["filename", "etag", "fullpath", "checksum", "filepath"]
@@ -311,7 +317,7 @@ class File(DataModel):
     def validate_source(cls, source: str) -> str:
         # Allow empty source for intermediate/placeholder objects, but when set
         # require an explicit scheme to avoid ambiguous handling.
-        if source and not _SOURCE_SCHEME_RE.match(source):
+        if source and not _has_scheme(source):
             raise ValueError(
                 "File.source must start with a URI scheme (e.g. file://, s3://), "
                 f"got: {source!r}"
@@ -323,12 +329,20 @@ class File(DataModel):
         res["last_modified"] = str(res["last_modified"])
         return res
 
+    if TYPE_CHECKING:
+        _caching_enabled: bool
+        _download_cb: Callback
+        _fs_path_cache: tuple[str, str, str] | None
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._catalog = None
-        self._caching_enabled: bool = False
-        self._download_cb: Callback = DEFAULT_CALLBACK
-        self._fs_path_cache: tuple[str, str, str] | None = None
+        # one dict update: pydantic's __setattr__ is slow, and listings build millions
+        self.__dict__.update(
+            _catalog=None,
+            _caching_enabled=False,
+            _download_cb=DEFAULT_CALLBACK,
+            _fs_path_cache=None,
+        )
 
     def __getstate__(self):
         state = super().__getstate__()
