@@ -7,8 +7,12 @@ import sqlalchemy
 from datachain.lib.convert.flatten import classify_field, flatten_value, union_layout
 from datachain.lib.data_model import DataType, is_chain_type, validate_chain_type
 from datachain.lib.signal_schema import SignalSchema
-from datachain.lib.utils import DataChainParamsError
+from datachain.lib.utils import (
+    DataChainParamsError,
+    assert_unique_export_columns,
+)
 from datachain.query import Session
+from datachain.query.schema import DEFAULT_DELIMITER
 
 if TYPE_CHECKING:
     from typing_extensions import ParamSpec
@@ -228,6 +232,10 @@ def read_records(
         to_insert = []
 
     signal_schema = SignalSchema(schema)
+    assert_unique_export_columns(
+        [c.split(DEFAULT_DELIMITER) for c in signal_schema.db_signals()],
+        DEFAULT_DELIMITER,
+    )
     flat: Iterable[dict] = (_flatten_record(rec, signal_schema) for rec in to_insert)
     content_hash: str | None = None
     if isinstance(to_insert, (list, tuple)):

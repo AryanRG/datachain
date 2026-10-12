@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
 from functools import lru_cache
+from itertools import combinations
 from typing import Any, ClassVar, Literal, NamedTuple, Union, get_args, get_origin
 
 from pydantic import AliasChoices, BaseModel, Field, create_model
@@ -450,6 +451,8 @@ def validate_chain_type(anno: Any) -> None:
         inner, _ = unwrap_optional(current)
         arms, _ = union_arms(inner)
         if len(arms) >= 2:
+            if collection:
+                _reject_same_json_scalars(arms, collection, where)
             if collection and not in_model:
                 _reject_model_arms(inner, collection)
             elif collection:
@@ -459,7 +462,10 @@ def validate_chain_type(anno: Any) -> None:
         origin = get_origin(inner)
         if origin in (list, dict):
             kind = "list" if origin is list else "dict"
-            stack.extend((arg, kind, in_model, where) for arg in get_args(inner))
+            args = get_args(inner)
+            if origin is dict and args:
+                _reject_union_key(args[0], where)
+            stack.extend((arg, kind, in_model, where) for arg in args)
             continue
         fr = ModelStore.to_pydantic(inner)
         # once per collection state: a field is safe as a column, not inside a JSON cell
@@ -468,6 +474,36 @@ def validate_chain_type(anno: Any) -> None:
             stack.extend(
                 (f_info.annotation, collection, True, f"{fr.__name__}.{name}")
                 for name, f_info in fr.model_fields.items()
+            )
+
+
+def _location(where: str, kind: str = "") -> str:
+    return f"`{where}`" if where else (f"a {kind}" if kind else "a list or dict")
+
+
+def _reject_union_key(key: Any, where: str) -> None:
+    if len(union_arms(key)[0]) >= 2:
+        raise DataChainParamsError(
+            f"a Union dict key in {_location(where, 'dict')} is not supported: JSON "
+            "object keys are strings, so the arms cannot be told apart on read."
+        )
+
+
+# JSON holds these alike, so a collection cannot tell such arms apart on read
+_JSON_SCALAR_KIND: dict[Any, str] = {str: "string", datetime: "string", bytes: "string"}
+
+
+def _reject_same_json_scalars(arms: Sequence[Any], kind: str, where: str) -> None:
+    groups: dict[str, list[Any]] = {}
+    for arm in arms:
+        if ModelStore.to_pydantic(arm) is None and (k := _JSON_SCALAR_KIND.get(arm)):
+            groups.setdefault(k, []).append(arm)
+    for group in groups.values():
+        if len(group) > 1:
+            names = ", ".join(arm.__name__ for arm in group)
+            raise DataChainParamsError(
+                f"Union arms {names} are stored alike in JSON, so inside "
+                f"{_location(where, kind)} they cannot be told apart."
             )
 
 
@@ -480,19 +516,23 @@ def _reject_model_arms(elem: Any, kind: str) -> None:
 
 
 def _reject_same_shaped_arms(arms: Sequence[Any], where: str) -> None:
-    groups: dict[frozenset[str], list[Any]] = {}
-    for arm in arms:
-        if (fr := ModelStore.to_pydantic(arm)) is not None:
-            groups.setdefault(frozenset(fr.model_fields), []).append(fr)
-    for group in groups.values():
-        if len(group) > 1 and not _literal_discriminator(group):
-            names = ", ".join(arm.__name__ for arm in group)
-            location = f"`{where}`" if where else "a list or dict"
-            raise DataChainParamsError(
-                f"Union arms {names} declare the same field names, so inside "
-                f"{location} they cannot be told apart: add a field like `kind: "
-                'Literal["..."]`.'
-            )
+    models = [fr for arm in arms if (fr := ModelStore.to_pydantic(arm)) is not None]
+    for first, second in combinations(models, 2):
+        fields, other = set(first.model_fields), set(second.model_fields)
+        if not (fields <= other or other <= fields):
+            continue
+        if _literal_discriminator([first, second]):
+            continue
+        shape = (
+            "declare the same field names"
+            if fields == other
+            else "declare one a subset of the other's field names"
+        )
+        raise DataChainParamsError(
+            f"Union arms {first.__name__}, {second.__name__} {shape}, so inside "
+            f"{_location(where)} they cannot be told apart: add a field like `kind: "
+            'Literal["..."]`.'
+        )
 
 
 def _literal_discriminator(arms: Sequence[type[BaseModel]]) -> bool:

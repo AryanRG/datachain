@@ -21,7 +21,7 @@ import pytest
 import datachain as dc
 from datachain import C, func
 from datachain.lib.data_model import DataModel
-from datachain.lib.utils import DataChainParamsError
+from datachain.lib.utils import DataChainColumnError, DataChainParamsError
 
 
 class _Foo(DataModel):
@@ -561,6 +561,35 @@ def test_merge_widens_union_on_the_padded_side(test_session):
 
     assert _ordered(merged, "value") == [(1, "x"), (2, None)]
     assert merged.signals_schema.values["value"] == int | str | None
+
+
+def test_union_cannot_be_a_diff_or_subtract_key(test_session):
+    def chain():
+        return dc.read_values(
+            id=[1, 2],
+            v=[1, "a"],
+            output={"id": int, "v": int | str},
+            session=test_session,
+        )
+
+    left, right = chain(), chain()
+    for key in ("v", "v.int"):
+        with pytest.raises(DataChainColumnError, match="cannot be a diff"):
+            left.diff(right, on=key)
+        with pytest.raises(DataChainColumnError, match="cannot be a subtract"):
+            left.subtract(right, on=[key])
+
+    assert left.diff(right, on="id").to_list("id") == []
+    assert left.subtract(right, on=["id"]).to_list("id") == []
+
+
+def test_signal_colliding_with_a_union_column_rejected(test_session):
+    with pytest.raises(DataChainColumnError, match="same export column"):
+        dc.read_records(
+            [{"value": 1, "value__int": 99}],
+            schema={"value": int | str, "value__int": int},
+            session=test_session,
+        )
 
 
 def test_return_annotation_gets_the_same_type_check(test_session):

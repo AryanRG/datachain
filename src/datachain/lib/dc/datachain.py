@@ -2313,6 +2313,7 @@ class DataChain:
             signals = list(zip(common_signals, common_signals, strict=False))
         elif on is not None and right_on is None:
             right_on = on
+            self.signals_schema.reject_union_keys("subtract", *on)
             resolved_signals = list(self.signals_schema.resolve(*on).db_signals())
             signals = list(zip(resolved_signals, resolved_signals, strict=False))  # type: ignore[arg-type]
         elif on is None and right_on is not None:
@@ -2328,6 +2329,8 @@ class DataChain:
                 raise DataChainParamsError(
                     "'on' and 'right_on' must have the same length"
                 )
+            self.signals_schema.reject_union_keys("subtract", *on)
+            other.signals_schema.reject_union_keys("subtract", *right_on)
             signals = list(
                 zip(
                     self.signals_schema.resolve(*on).db_signals(),

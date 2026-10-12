@@ -1272,6 +1272,17 @@ class SignalSchema:
         slots = [p for p, layout in self._tagged_ancestors(db_col) if layout.use_slots]
         return ".".join(slots[-1].split(DEFAULT_DELIMITER)) if slots else None
 
+    def reject_union_keys(self, method: str, *paths: str) -> None:
+        """Raise when a row-matching key touches a multi-arm union: it is several
+        columns whose inactive arms are NULL, and NULLs never compare equal."""
+        for path in paths:
+            if (root := self.multiarm_union_root(path)) is not None:
+                raise DataChainColumnError(
+                    root,
+                    f"a Union cannot be a {method}() key: its inactive arms are NULL"
+                    " and never compare equal; key on another column",
+                )
+
     @staticmethod
     def _field_type(cur: DataType, name: str) -> "DataType | None":
         """Annotation of model field ``name`` on ``cur`` (unwrapping Optional), or

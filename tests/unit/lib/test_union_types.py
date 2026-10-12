@@ -152,6 +152,45 @@ def test_same_shaped_arms_rejected_inside_a_collection():
         validate_chain_type(DeepHolder)
 
 
+def test_arms_stored_alike_in_json_rejected():
+    class Holder(DataModel):
+        items: list[datetime | str] = []  # noqa: RUF012
+
+    with pytest.raises(DataChainParamsError, match="stored alike in JSON"):
+        validate_chain_type(Holder)
+    with pytest.raises(DataChainParamsError, match="stored alike in JSON"):
+        validate_chain_type(list[datetime | str])
+    validate_chain_type(list[int | str])
+
+
+def test_union_dict_key_rejected():
+    class Holder(DataModel):
+        items: dict[int | str, str] = {}  # noqa: RUF012
+
+    with pytest.raises(DataChainParamsError, match="Union dict key"):
+        validate_chain_type(Holder)
+    with pytest.raises(DataChainParamsError, match="Union dict key"):
+        validate_chain_type(dict[int | str, str])
+    validate_chain_type(dict[str, int | str])
+
+
+def test_arm_fields_subset_of_another_rejected():
+    class Small(DataModel):
+        x: int = 0
+
+    class Big(DataModel):
+        x: int = 0
+        y: str | None = None
+
+    class Holder(DataModel):
+        items: list[Small | Big] = []  # noqa: RUF012
+
+    with pytest.raises(DataChainParamsError, match="subset of the other"):
+        validate_chain_type(Holder)
+    # as a signal, each arm keeps its own columns, so the shapes stay apart
+    validate_chain_type(Small | Big)
+
+
 def test_same_shaped_arms_rejected_whatever_the_field_order():
     class Human(DataModel):
         label: str = ""
