@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import closing, nullcontext
 from dataclasses import dataclass
-from functools import partial
+from functools import cached_property, partial
 from graphlib import CycleError, TopologicalSorter
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -398,6 +398,10 @@ class UDFBase(AbstractUDF):
     ) -> Iterator[Iterable[UDFResult]]:
         raise NotImplementedError
 
+    @cached_property
+    def _output_names(self) -> list[str]:
+        return list(self.output.values)
+
     def _flatten_row(self, row):
         if len(self.output.values) > 1 and not isinstance(row, BaseModel):
             annos = self.output.values
@@ -409,7 +413,7 @@ class UDFBase(AbstractUDF):
                     "in output"
                 )
             flat: list[Any] = []
-            names = list(annos)
+            names = self._output_names
             # strict=False as shorter row is allowed for arrow/parquet (guarded above)
             for i, (obj, anno) in enumerate(zip(row, annos.values(), strict=False)):
                 # names[i:] are the signals a cover model at this position holds

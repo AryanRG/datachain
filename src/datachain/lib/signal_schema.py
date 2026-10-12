@@ -48,6 +48,7 @@ from datachain.lib.convert.flatten import iter_field_columns
 from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.convert.sql_to_python import sql_to_python
 from datachain.lib.convert.unflatten import (
+    ModelReader,
     read_union,
     unflatten_to_json_pos,
 )
@@ -644,30 +645,44 @@ class SignalSchema:
                 res[db_name] = self._db_leaf_sql_type(path, type_)
         return res
 
-    def _read_top_signal(
-        self,
-        anno: DataType,
+    @cached_property
+    def _signal_plan(self) -> dict[str, tuple[DataType, Any, Any, list[str]]]:
+        """Per signal, worked out once instead of on every row: its annotation, its
+        tagged-union layout, its model, and the db columns its reader consumes."""
+        plan: dict[str, tuple[DataType, Any, Any, list[str]]] = {}
+        for name, anno in self.values.items():
+            layout = union_layout(anno)
+            inner, _ = unwrap_optional(anno)
+            model = None if layout is not None else ModelStore.to_pydantic(inner)
+            cols = (
+                []
+                if name in self.setup_func
+                else [
+                    DEFAULT_DELIMITER.join(
+                        (*col.path, TYPE_TAG_FIELD) if col.is_sentinel else col.path
+                    )
+                    for col in iter_field_columns(anno, tuple(name.split(".")))
+                ]
+            )
+            plan[name] = (anno, layout, model, cols)
+        return plan
+
+    @staticmethod
+    def _read_signal(
+        plan: tuple[DataType, Any, Any],
         row: Sequence[Any],
         pos: int,
-        build_model: Callable[[type[BaseModel], dict], Any],
+        read_model: ModelReader,
         convert_scalar: Callable[[DataType, Any], Any] | None = None,
     ) -> tuple[Any, int]:
         """Read one top-level signal value at ``pos``. A tagged union (including
-        ``Optional[Model]``) hydrates only its active arm; ``build_model`` turns a
-        model arm's flat columns into an instance (or None), and ``convert_scalar``
-        (if given) post-processes a plain scalar leaf."""
-
-        def read_model(
-            fr: type[BaseModel], r: Sequence[Any], p: int
-        ) -> tuple[Any, int]:
-            j, p = unflatten_to_json_pos(fr, r, p, build_model)
-            return build_model(fr, j), p
-
-        if (layout := union_layout(anno)) is not None:
+        ``Optional[Model]``) hydrates only its active arm; ``convert_scalar`` (if
+        given) post-processes a plain scalar leaf."""
+        anno, layout, model = plan
+        if layout is not None:
             return read_union(layout, row, pos, read_model)
-        inner, _ = unwrap_optional(anno)
-        if (fr := ModelStore.to_pydantic(inner)) is not None:
-            return read_model(fr, row, pos)
+        if model is not None:
+            return read_model(model, row, pos)
         value = row[pos]
         if convert_scalar is not None:
             value = convert_scalar(anno, value)
@@ -685,18 +700,26 @@ class SignalSchema:
                     return None
                 raise
 
+        def read_model(
+            fr: type[BaseModel], r: Sequence[Any], p: int
+        ) -> tuple[Any, int]:
+            j, p = unflatten_to_json_pos(fr, r, p, build_model)
+            return build_model(fr, j), p
+
+        convert = partial(self._convert_feature_value, catalog=None, cache=False)
         objs: list[Any] = []
-        for name, fr_type in self.values.items():
+        for name, (anno, layout, model, cols) in self._signal_plan.items():
             if self.setup_values and name in self.setup_values:
                 objs.append(self.setup_values.get(name))
                 continue
-            convert_scalar = (
-                partial(self._convert_feature_value, catalog=None, cache=False)
-                if self._row_conversion_required[name]
-                else None
+            row = [row_dict[col] for col in cols]
+            obj, _ = self._read_signal(
+                (anno, layout, model),
+                row,
+                0,
+                read_model,
+                convert if self._row_conversion_required[name] else None,
             )
-            row = self._signal_row_values(name, fr_type, row_dict)
-            obj, _ = self._read_top_signal(fr_type, row, 0, build_model, convert_scalar)
             objs.append(obj)
         return objs
 
@@ -808,19 +831,6 @@ class SignalSchema:
         return fields
 
     @staticmethod
-    def _signal_row_values(
-        name: str,
-        annotation: DataType,
-        row_dict: "RowDict",
-    ) -> list[Any]:
-        """Read a signal's named columns in the order used by the row decoder."""
-        result = []
-        for col in iter_field_columns(annotation, tuple(name.split("."))):
-            path = (*col.path, TYPE_TAG_FIELD) if col.is_sentinel else col.path
-            result.append(row_dict[DEFAULT_DELIMITER.join(path)])
-        return result
-
-    @staticmethod
     def _all_values_none(value: Any) -> bool:
         if isinstance(value, dict):
             return all(SignalSchema._all_values_none(v) for v in value.values())
@@ -922,11 +932,17 @@ class SignalSchema:
         def convert_scalar(anno: DataType, value: Any) -> Any:
             return self._convert_feature_value(anno, value, catalog, cache)
 
+        def read_model(
+            fr: type[BaseModel], r: Sequence[Any], p: int
+        ) -> tuple[Any, int]:
+            j, p = unflatten_to_json_pos(fr, r, p, build_model)
+            return build_model(fr, j), p
+
         res = []
         pos = 0
-        for fr_cls in self.values.values():
-            value, pos = self._read_top_signal(
-                fr_cls, row, pos, build_model, convert_scalar
+        for anno, layout, model, _cols in self._signal_plan.values():
+            value, pos = self._read_signal(
+                (anno, layout, model), row, pos, read_model, convert_scalar
             )
             res.append(value)
         return res
