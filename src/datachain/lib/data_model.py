@@ -369,7 +369,8 @@ def _arm_for_index_tag(layout: "UnionLayout", tag: Any) -> Any:
 def _warn_index_tag() -> None:
     # FutureWarning: a DeprecationWarning is hidden by default outside __main__
     warnings.warn(
-        "Legacy Optional[DataModel] _type_tag is deprecated; re-save the dataset.",
+        "A numeric Optional[DataModel] _type_tag is deprecated; re-create this data"
+        " with the current version.",
         FutureWarning,
         stacklevel=2,
     )

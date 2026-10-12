@@ -31,6 +31,7 @@ from datachain.lib.data_model import (
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema, SignalSchemaWarning
 from datachain.lib.utils import DataChainParamsError
+from datachain.sql.types import Int64, String
 
 
 @pytest.fixture(autouse=True)
@@ -449,11 +450,20 @@ def test_arm_name_wins_over_a_field_of_the_same_name():
         value: int = 0
 
     class Right(DataModel):
-        Left: str = ""  # noqa: N815
+        Left: str = ""
 
     schema = SignalSchema({"v": Left | Right})
     assert schema.resolve_arm_path("v.Left.value") == "v.Left.value"
     assert schema.to_db_col("v.Left.value") == "v__Left__value"
+
+
+def test_legacy_tag_dataset_rejected():
+    from datachain.lib.dc.datasets import _reject_legacy_tags
+
+    schema = SignalSchema({"m": Foo | None})
+    assert _reject_legacy_tags("new_ds", schema, {"m___type_tag": String()}) is None
+    with pytest.raises(OutdatedDatasetFormatError, match="re-create the dataset"):
+        _reject_legacy_tags("old_ds", schema, {"m___type_tag": Int64()})
 
 
 def test_multi_arm_unknown_tag_errors():
@@ -476,7 +486,7 @@ def unwarned_index_tag():
 
 def test_index_tag_reads_optional_model(unwarned_index_tag):
     layout = UnionLayout(arms=[Foo], has_none=True, use_slots=False)
-    with pytest.warns(FutureWarning, match="Legacy Optional"):
+    with pytest.warns(FutureWarning, match="numeric Optional"):
         got = _union_value({"v._type_tag": 0, "v.a": 7, "v.b": "z"}, layout, "v")
     assert (got.a, got.b) == (7, "z")
 

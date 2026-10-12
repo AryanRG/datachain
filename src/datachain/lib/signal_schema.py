@@ -77,7 +77,7 @@ from datachain.lib.utils import (
     type_to_str,
 )
 from datachain.query.schema import DEFAULT_DELIMITER, C, Column, ColumnExpr, ColumnMeta
-from datachain.sql.types import SQLType
+from datachain.sql.types import SQLType, String
 
 if TYPE_CHECKING:
     from collections.abc import MutableMapping
@@ -1250,6 +1250,19 @@ class SignalSchema:
         if db_col in self._tagged_db_cols:
             return f"{db_col}{DEFAULT_DELIMITER}{self._TYPE_TAG_FIELD}"
         return None
+
+    def legacy_tag_columns(self, column_types: Mapping[str, Any]) -> list[str]:
+        """Discriminator columns stored as a number: the layout written before arm
+        names, which queries over this schema cannot read."""
+        legacy = []
+        for prefix in self._tagged_db_cols:
+            tag = f"{prefix}{DEFAULT_DELIMITER}{self._TYPE_TAG_FIELD}"
+            stored = column_types.get(tag)
+            if stored is None:
+                continue
+            if not issubclass(stored if isclass(stored) else type(stored), String):
+                legacy.append(tag)
+        return legacy
 
     def infer_type_tags(self, flat: dict[str, Any]) -> None:
         """Fill a pre-flattened record's missing ``_type_tag`` from the arm columns
