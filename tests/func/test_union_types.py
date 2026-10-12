@@ -547,6 +547,28 @@ def test_merge_widens_union_on_the_padded_side(test_session):
     assert merged.signals_schema.values["value"] == int | str | None
 
 
+def test_group_by_union_with_model_arms(test_session):
+    chain = dc.read_values(
+        v=[_Cat(name="c"), _Dog(name="d")],
+        output={"v": _Cat | _Dog},
+        session=test_session,
+    )
+    rows = chain.group_by(n=func.count(), partition_by="v").to_records()
+    got = {(r["v___Cat__name"], r["v___Dog__name"]): r["n"] for r in rows}
+    assert got == {("c", None): 1, (None, "d"): 1}
+
+
+def test_chained_union_with_an_optional_side(test_session):
+    a = dc.read_values(v=[_Cat(name="x")], output={"v": _Cat}, session=test_session)
+    b = dc.read_values(v=[_Cat(name="y")], output={"v": _Cat}, session=test_session)
+    c = dc.read_values(v=[None], output={"v": _Cat | None}, session=test_session)
+
+    chained = a.union(b).union(c)
+    names = [v.name if v is not None else None for v in chained.to_values("v")]
+    assert sorted(names, key=lambda n: (n is None, n)) == ["x", "y", None]
+    assert chained.signals_schema.values["v"] == _Cat | None
+
+
 def test_union_with_missing_signal_names_the_signal(test_session):
     from datachain.query.dataset import UnionSchemaMismatchError
 

@@ -329,7 +329,8 @@ def arm_for_tag(layout: "UnionLayout", tag: Any) -> Any:
         return _arm_for_index_tag(layout, tag)
     if layout.use_slots:
         raise _unknown_tag_error(layout, tag)
-    return None
+    # a single arm needs no name match; '' is a NULL tag on ClickHouse
+    return layout.arms[0] if tag else None
 
 
 def _unknown_tag_error(layout: "UnionLayout", tag: Any) -> OutdatedDatasetFormatError:

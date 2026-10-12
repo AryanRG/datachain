@@ -2164,7 +2164,8 @@ class DataChain:
 
         lvals = self.signals_schema.values
         rvals = other.signals_schema.values
-        if set(lvals) != set(rvals):
+        names = set(lvals) - {"sys"}  # a union's own result has no sys
+        if names != set(rvals) - {"sys"}:
             return self, other  # genuinely different signals -> let union error
 
         lprom, rprom = dict(lvals), dict(rvals)
@@ -2202,7 +2203,7 @@ class DataChain:
                     inner
                 )
 
-        for name in lvals:
+        for name in names:
             l_inner, l_opt = unwrap_optional(lvals[name])
             r_inner, r_opt = unwrap_optional(rvals[name])
             if l_inner != r_inner or l_opt == r_opt:

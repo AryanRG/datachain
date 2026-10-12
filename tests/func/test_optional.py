@@ -624,6 +624,19 @@ def test_select_partial_optional_datamodel_leaf(test_session):
     assert got == {1: 5, 2: None}
 
 
+def test_select_partial_optional_datamodel_hydrates_the_parent(test_session):
+    items = [_Inner(score=5, label="a"), None]
+    chain = dc.read_values(
+        id=[1, 2],
+        item=items,
+        output={"id": int, "item": Optional[_Inner]},
+        session=test_session,
+    )
+    got = dict(chain.select("id", "item.score").order_by("id").to_list("id", "item"))
+    assert got[1].score == 5
+    assert got[2] is None
+
+
 def test_udf_returns_optional_datamodel_mixed_none(test_session):
     def maybe(score: int) -> _Inner | None:
         return _Inner(score=score, label="ok") if score > 0 else None

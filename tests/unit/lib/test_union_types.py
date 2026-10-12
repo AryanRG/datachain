@@ -397,10 +397,12 @@ def test_union_arm_named_like_the_discriminator_rejected():
         SignalSchema({"value": _type_tag | str}).db_signals()
 
 
-def test_single_arm_unknown_tag_reads_none():
+def test_single_arm_reads_the_arm_under_any_tag_name():
     layout = UnionLayout(arms=[Foo], has_none=True, use_slots=False)
-    assert _union_value({"v._type_tag": "Gone"}, layout, "v") is None
+    got = _union_value({"v._type_tag": "FooPartial_1a2b_v1", "v.a": 5}, layout, "v")
+    assert (got.a, got.b) == (5, "")
     assert _union_value({"v._type_tag": None}, layout, "v") is None
+    assert _union_value({"v._type_tag": ""}, layout, "v") is None  # CH NULL tag
 
 
 def test_multi_arm_unknown_tag_errors():
