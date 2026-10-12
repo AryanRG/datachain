@@ -78,7 +78,7 @@ def union_value_match(obj, anno, cover_names: "Sequence[str]" = ()) -> bool:
         return False
     if obj is None or not isinstance(obj, BaseModel):
         return True
-    if any(_arm_matches(obj, arm, exact=False) for arm in layout.arms):
+    if any(_arm_matches(obj, arm) for arm in layout.arms):
         return True
     return tuple(type(obj).model_fields) != tuple(cover_names)
 
@@ -117,10 +117,13 @@ def _flatten_arm(value, arm) -> Generator:
         yield _flatten_scalar(value)
 
 
+# arms that take a value of another type, as the same column type would
+_COERCIBLE: dict[Any, tuple[type, ...]] = {float: (int,)}
+
+
 def _match_union_arm(value, layout: UnionLayout) -> int | None:
-    """Arm index for ``value`` (None for the None arm). Exact-type match beats
-    ``isinstance`` so ``bool`` isn't swallowed by an ``int`` arm; among arms matched
-    by ``isinstance`` the narrowest wins."""
+    """Arm index for ``value`` (None for the None arm). Among the arms a value is an
+    instance of, the narrowest wins, so ``bool`` isn't swallowed by an ``int`` arm."""
     # numpy scalar -> native type; via sys.modules to keep numpy a lazy import
     if (np := sys.modules.get("numpy")) is not None and isinstance(value, np.generic):
         value = value.item()
@@ -130,13 +133,14 @@ def _match_union_arm(value, layout: UnionLayout) -> int | None:
                 f"value None does not match any arm of union {layout.arms}"
             )
         return None
-    for i, arm in enumerate(layout.arms):
-        if _arm_matches(value, arm, exact=True):
-            return i
-    if matched := [
-        i for i, arm in enumerate(layout.arms) if _arm_matches(value, arm, exact=False)
-    ]:
+    if matched := [i for i, arm in enumerate(layout.arms) if _arm_matches(value, arm)]:
         return _narrowest_arm(value, layout.arms, matched)
+    # a union is no stricter than the arm alone: a plain float column takes an int
+    coercible = [
+        i for i, arm in enumerate(layout.arms) if type(value) in _COERCIBLE.get(arm, ())
+    ]
+    if len(coercible) == 1:
+        return coercible[0]
     raise DataChainParamsError(
         f"value {value!r} does not match any arm of union {layout.arms}"
     )
@@ -158,11 +162,10 @@ def _narrowest_arm(value, arms: tuple[Any, ...], matched: list[int]) -> int:
     return best
 
 
-def _arm_matches(value, arm, *, exact: bool) -> bool:
-    # exact match (incl. models) so a subclass isn't swallowed by a base-class arm
+def _arm_matches(value, arm) -> bool:
     if not inspect.isclass(arm):
         return False
-    return type(value) is arm if exact else isinstance(value, arm)
+    return isinstance(value, arm)
 
 
 def _flatten_scalar(value):

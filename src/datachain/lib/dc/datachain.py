@@ -1574,6 +1574,15 @@ class DataChain:
                 except ValueError:
                     pass
 
+        # a union is atomic, and C('v.int') means the same as 'v.int' here
+        partition_by = [
+            root
+            if isinstance(col, Column)
+            and (root := self.signals_schema.multiarm_union_root(col.name)) is not None
+            else col
+            for col in partition_by
+        ]
+
         for col in partition_by:
             if isinstance(col, str):
                 # a union is atomic: partition by the whole union, not one arm

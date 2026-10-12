@@ -582,6 +582,17 @@ def test_to_storage_takes_a_type_qualified_signal(tmp_path, test_session):
     assert (out / "a.txt").read_text() == "hi"
 
 
+def test_group_by_an_arm_path_groups_the_whole_union(test_session):
+    chain = dc.read_values(
+        v=[1, "a", 2, "b"], output={"v": int | str}, session=test_session
+    )
+    counts = [
+        len(chain.group_by(n=func.count(), partition_by=key).to_records())
+        for key in ("v", "v.str", C("v.str"))
+    ]
+    assert counts == [4, 4, 4]
+
+
 def test_union_root_in_a_func_names_the_arms(test_session):
     chain = dc.read_values(
         id=[1], v=[1], output={"id": int, "v": int | str}, session=test_session
@@ -827,10 +838,30 @@ def test_union_no_arm_value_raises_multi_output(test_session):
     with pytest.raises(DataChainParamsError, match="does not match any arm"):
         dc.read_values(
             id=[1],
-            v=[5],
+            v=[{"k": 1}],
             output={"id": int, "v": float | str},
             session=test_session,
         ).save("u_noarm")
+
+
+def test_union_takes_what_the_arm_alone_takes(test_session):
+    # a plain float column takes an int, so a float arm does too
+    chain = dc.read_values(
+        id=[1], v=[5], output={"id": int, "v": float | str}, session=test_session
+    )
+    assert chain.to_values("v") == [5.0]
+
+    # an exact arm still wins, so an int stays an int next to a float arm
+    both = dc.read_values(
+        id=[1, 2],
+        v=[5, 1.5],
+        output={"id": int, "v": int | float},
+        session=test_session,
+    )
+    assert [type(v).__name__ for v in both.order_by("id").to_values("v")] == [
+        "int",
+        "float",
+    ]
 
 
 def test_union_wrong_model_raises_multi_output(test_session):
