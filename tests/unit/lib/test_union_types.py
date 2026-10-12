@@ -486,6 +486,13 @@ def test_legacy_tag_dataset_rejected():
         _reject_legacy_tags("old_ds", schema, {"m___type_tag": Int64()})
 
 
+def test_binary_tag_reads_as_its_name():
+    # parquet written by Spark holds string columns as binary
+    schema = SignalSchema({"v": int | str})
+    row = RowDict(zip(schema.to_udf_spec(), (b"str", None, "a"), strict=True))
+    assert schema.row_to_objs(row) == ["a"]
+
+
 def test_multi_arm_unknown_tag_errors():
     schema = SignalSchema({"v": int | str})
     with pytest.raises(DataChainParamsError, match="not one of the declared Union"):

@@ -126,6 +126,9 @@ def _match_union_arm(value, layout: UnionLayout) -> int | None:
     instance of, the narrowest wins, so ``bool`` isn't swallowed by an ``int`` arm."""
     # numpy scalar -> native type; via sys.modules to keep numpy a lazy import
     if (np := sys.modules.get("numpy")) is not None and isinstance(value, np.generic):
+        # .item() on a nanosecond datetime64 gives an int, so step down first
+        if isinstance(value, np.datetime64):
+            value = value.astype("datetime64[us]")
         value = value.item()
     if value is None:
         if not layout.has_none:

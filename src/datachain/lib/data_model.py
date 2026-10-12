@@ -328,6 +328,8 @@ def arm_selector(arm: Any) -> str:
 def arm_for_tag(layout: "UnionLayout", tag: Any) -> Any:
     """Union arm a stored ``_type_tag`` selects; None when the value is absent. An
     unknown tag of a multi-arm union is a schema mismatch, not an absence."""
+    if isinstance(tag, bytes):
+        tag = tag.decode()  # parquet written by Spark holds strings as binary
     for arm in layout.arms:
         if arm_selector(arm) == tag:
             return arm
