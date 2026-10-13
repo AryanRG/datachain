@@ -308,6 +308,16 @@ def create_feature_model(
     return model
 
 
+def _model_reader(build_model: Callable[[type[BaseModel], dict], Any]) -> ModelReader:
+    """Reader that turns a model's flat columns into an instance."""
+
+    def read_model(fr: type[BaseModel], row: Sequence[Any], pos: int):
+        values, pos = unflatten_to_json_pos(fr, row, pos, build_model)
+        return build_model(fr, values), pos
+
+    return read_model
+
+
 @dataclass
 class SignalSchema:
     values: dict[str, DataType]
@@ -700,12 +710,7 @@ class SignalSchema:
                     return None
                 raise
 
-        def read_model(
-            fr: type[BaseModel], r: Sequence[Any], p: int
-        ) -> tuple[Any, int]:
-            j, p = unflatten_to_json_pos(fr, r, p, build_model)
-            return build_model(fr, j), p
-
+        read_model = _model_reader(build_model)
         convert = partial(self._convert_feature_value, catalog=None, cache=False)
         objs: list[Any] = []
         for name, (anno, layout, model, cols) in self._signal_plan.items():
@@ -934,12 +939,7 @@ class SignalSchema:
         def convert_scalar(anno: DataType, value: Any) -> Any:
             return self._convert_feature_value(anno, value, catalog, cache)
 
-        def read_model(
-            fr: type[BaseModel], r: Sequence[Any], p: int
-        ) -> tuple[Any, int]:
-            j, p = unflatten_to_json_pos(fr, r, p, build_model)
-            return build_model(fr, j), p
-
+        read_model = _model_reader(build_model)
         res = []
         pos = 0
         for anno, layout, model, _cols in self._signal_plan.values():
@@ -1250,7 +1250,7 @@ class SignalSchema:
         """DB name of the ``_type_tag`` discriminator when ``db_col`` is itself a
         tagged-union node (``Optional[DataModel]`` or a multi-arm union), else None."""
         if db_col in self._tagged_db_cols:
-            return f"{db_col}{DEFAULT_DELIMITER}{self._TYPE_TAG_FIELD}"
+            return f"{db_col}{DEFAULT_DELIMITER}{TYPE_TAG_FIELD}"
         return None
 
     def legacy_tag_columns(self, column_types: Mapping[str, Any]) -> list[str]:
@@ -1258,7 +1258,7 @@ class SignalSchema:
         names, which queries over this schema cannot read."""
         legacy = []
         for prefix in self._tagged_db_cols:
-            tag = f"{prefix}{DEFAULT_DELIMITER}{self._TYPE_TAG_FIELD}"
+            tag = f"{prefix}{DEFAULT_DELIMITER}{TYPE_TAG_FIELD}"
             stored = column_types.get(tag)
             if stored is None:
                 continue
@@ -1270,7 +1270,7 @@ class SignalSchema:
         """Fill a pre-flattened record's missing ``_type_tag`` from the arm columns
         carrying a value: ``to_records()`` hides it, so a round trip rebuilds it."""
         for prefix, layout in self._tagged_db_cols.items():
-            tag_col = f"{prefix}{DEFAULT_DELIMITER}{self._TYPE_TAG_FIELD}"
+            tag_col = f"{prefix}{DEFAULT_DELIMITER}{TYPE_TAG_FIELD}"
             if tag_col in flat:
                 continue
             for arm in layout.arms:
@@ -1296,7 +1296,7 @@ class SignalSchema:
         itself a discriminator).
         """
         for prefix, _ in self._tagged_ancestors(db_col):
-            sentinel = f"{prefix}{DEFAULT_DELIMITER}{self._TYPE_TAG_FIELD}"
+            sentinel = f"{prefix}{DEFAULT_DELIMITER}{TYPE_TAG_FIELD}"
             return None if sentinel == db_col else sentinel
         return None
 
@@ -1418,25 +1418,6 @@ class SignalSchema:
                 )
             return DataChainColumnError(name, hint)
         return None
-
-    def arm_display_path(self, path: list[str]) -> list[str]:
-        """Readable union path. Arms are stored under their type name (``block.name``,
-        ``block.ToolUseBlock.field``), so this walks the cursor to validate the arm
-        segments and returns the path unchanged."""
-        if not path or path[0] not in self.values:
-            return path
-        cur: DataType = self.values[path[0]]
-        out = [path[0]]
-        for seg in path[1:]:
-            layout = union_layout(cur)
-            arm = (
-                next((a for a in layout.arms if arm_selector(a) == seg), None)
-                if layout is not None and layout.use_slots
-                else None
-            )
-            out.append(seg)
-            cur = arm if arm is not None else self._field_type(cur, seg)  # type: ignore[assignment]
-        return out
 
     def order_by_column(
         self, db_col: str, *, descending: bool = False
@@ -1741,7 +1722,7 @@ class SignalSchema:
             new_prefix = prefix + suffix
             if not include_sys and new_prefix and new_prefix[0] == "sys":
                 continue
-            if not include_sentinels and name == self._TYPE_TAG_FIELD:
+            if not include_sentinels and name == TYPE_TAG_FIELD:
                 continue
             hidden_fields = getattr(type_, "_hidden_fields", None)
             if hidden_fields and substree and not include_hidden:
@@ -1775,7 +1756,7 @@ class SignalSchema:
             include_hidden=include_hidden, include_sentinels=False
         ):
             total_indent = start_at + depth * indent
-            col_name = " " * total_indent + self.arm_display_path(path)[-1]
+            col_name = " " * total_indent + path[-1]
             col_type = SignalSchema._type_to_str(type_)
             print(col_name, col_type, sep=": ", file=file)
 
@@ -1794,10 +1775,9 @@ class SignalSchema:
         self,
         include_hidden: bool = True,
         include_sentinels: bool = False,
-        readable: bool = False,
     ):
         paths = [
-            self.arm_display_path(path) if readable else path
+            path
             for path, _, has_subtree, _ in self.get_flat_tree(
                 include_hidden=include_hidden, include_sentinels=include_sentinels
             )
@@ -1854,7 +1834,6 @@ class SignalSchema:
 
     # `_type_tag` = the active arm's selector name (``int``, ``Pet``), or NULL for None
     # — the same name that keys the arm's columns. Leading-underscore internal column.
-    _TYPE_TAG_FIELD = TYPE_TAG_FIELD
     _TYPE_TAG_TYPE = str | None  # type: ignore[valid-type]
 
     @staticmethod
@@ -1866,7 +1845,7 @@ class SignalSchema:
         subtree = SignalSchema._build_tree_for_model(fr) or {}
         if is_optional:
             sentinel: tuple[Any, Any] = (SignalSchema._TYPE_TAG_TYPE, None)
-            subtree = {SignalSchema._TYPE_TAG_FIELD: sentinel, **subtree}
+            subtree = {TYPE_TAG_FIELD: sentinel, **subtree}
         return subtree
 
     @staticmethod
@@ -1875,9 +1854,7 @@ class SignalSchema:
     ) -> dict[str, tuple[DataType, dict | None]]:
         """Subtree for a multi-arm union: ``_type_tag`` plus one slot per arm."""
         sentinel: tuple[Any, Any] = (SignalSchema._TYPE_TAG_TYPE, None)
-        subtree: dict[str, tuple[DataType, dict | None]] = {
-            SignalSchema._TYPE_TAG_FIELD: sentinel
-        }
+        subtree: dict[str, tuple[DataType, dict | None]] = {TYPE_TAG_FIELD: sentinel}
         for arm in layout.arms:
             arm_sub = (
                 SignalSchema._build_tree_for_model(fr)

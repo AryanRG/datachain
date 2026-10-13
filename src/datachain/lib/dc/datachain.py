@@ -43,6 +43,7 @@ from datachain.job import Job
 from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.convert.sql_to_python import sql_to_python
 from datachain.lib.data_model import (
+    TYPE_TAG_FIELD,
     DataModel,
     DataType,
     DataValue,
@@ -1942,9 +1943,7 @@ class DataChain:
 
     def to_records(self) -> list[dict[str, Any]]:
         """Convert every row to a dictionary."""
-        headers, _ = self._effective_signals_schema.get_headers_with_length(
-            readable=True
-        )
+        headers, _ = self._effective_signals_schema.get_headers_with_length()
         assert_unique_export_columns(headers, DEFAULT_DELIMITER)
         column_names = [DEFAULT_DELIMITER.join(filter(None, h)) for h in headers]
         return [dict(zip(column_names, row, strict=False)) for row in self.results()]
@@ -2180,7 +2179,7 @@ class DataChain:
         lprom, rprom = dict(lvals), dict(rvals)
         left_add: dict[str, Any] = {}
         right_add: dict[str, Any] = {}
-        sentinel_field = SignalSchema._TYPE_TAG_FIELD
+        sentinel_field = TYPE_TAG_FIELD
 
         def _present_sentinel(arm: Any) -> Any:
             # the active arm's selector name; nullable to match the _type_tag column
@@ -2510,7 +2509,7 @@ class DataChain:
         import pandas as pd
 
         headers, max_length = self._effective_signals_schema.get_headers_with_length(
-            include_hidden=include_hidden, readable=True
+            include_hidden=include_hidden
         )
 
         columns: list[str] | pd.MultiIndex
@@ -2821,9 +2820,7 @@ class DataChain:
 
         target = File.at(path, session=self.session)
 
-        headers, _ = self._effective_signals_schema.get_headers_with_length(
-            readable=True
-        )
+        headers, _ = self._effective_signals_schema.get_headers_with_length()
         column_names = [".".join(filter(None, header)) for header in headers]
 
         with target.open("w", newline="", client_config=fs_kwargs) as f:

@@ -1,4 +1,4 @@
-"""Adversarial / differential tests for multi-arm ``...`` support.
+"""Adversarial / differential tests for multi-arm ``Union[...]`` support.
 
 Each probe asserts the *logically correct* value, so running this file on SQLite
 (reference) and ClickHouse surfaces backend divergences as failures. Coverage:

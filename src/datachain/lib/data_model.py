@@ -248,11 +248,8 @@ def union_arms(anno: Any) -> tuple[list[Any], bool]:
 
 
 # Scalar arm types a tagged union stores as its own column (DataModels handled too).
-_TAGGABLE_SCALARS: "tuple[type, ...]" = NULLABLE_SCALARS
-
-
 def _is_taggable_arm(arm: Any) -> bool:
-    return ModelStore.is_pydantic(arm) or arm in _TAGGABLE_SCALARS
+    return ModelStore.is_pydantic(arm) or arm in NULLABLE_SCALARS
 
 
 class UnionLayout(NamedTuple):

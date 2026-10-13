@@ -1,9 +1,9 @@
-"""Functional tests for multi-arm ``...`` support (tagged unions).
+"""Functional tests for multi-arm ``Union[...]`` support (tagged unions).
 
 Covers every union kind end to end — ``basic | basic``,
 ``Model | Model`` (arms declaring the same fields included), mixed
 ``basic | Model`` and nullable
-``... | None`` — through ``read_values`` / ``map`` ingestion, ``save``
+``Union[...] | None`` — through ``read_values`` / ``map`` ingestion, ``save``
 round-trips, parquet/JSON export, and the query ops (filter / mutate / select /
 group_by / isnone / count / union). The active arm is stored under a ``_type_tag``
 discriminator; inactive arms are NULL. These run on both SQLite and ClickHouse

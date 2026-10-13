@@ -1,4 +1,4 @@
-"""Unit tests for multi-arm ``...`` support (tagged unions).
+"""Unit tests for multi-arm ``Union[...]`` support (tagged unions).
 
 Covers the type helpers (``union_arms`` canonical ordering, ``union_layout``
 classification, ``is_chain_type``), the ``_type_tag`` discriminator and per-arm
@@ -535,12 +535,6 @@ def test_index_tag_rejected_multi_arm(unwarned_index_tag):
         schema.row_to_objs(
             RowDict(zip(schema.to_udf_spec(), (0, 42, None), strict=True))
         )
-
-
-def test_arm_display_path_passes_through_unknown_paths():
-    schema = SignalSchema({"v": int | str})
-    assert schema.arm_display_path([]) == []
-    assert schema.arm_display_path(["unknown"]) == ["unknown"]
 
 
 def test_order_by_column_none_for_unknown_signal():

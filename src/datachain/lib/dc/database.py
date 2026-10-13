@@ -117,10 +117,7 @@ def to_database(
         signals_schema.db_signals(as_columns=True, include_sentinels=False),
     )
     # readable arm names (value.int), not raw db columns (value__int)
-    display_paths = [
-        signals_schema.arm_display_path(c.name.split(DEFAULT_DELIMITER))
-        for c in db_cols
-    ]
+    display_paths = [c.name.split(DEFAULT_DELIMITER) for c in db_cols]
     assert_unique_export_columns(display_paths, DEFAULT_DELIMITER)
     all_columns = [
         sqlalchemy.Column(DEFAULT_DELIMITER.join(path), c.type)
