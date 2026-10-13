@@ -204,6 +204,18 @@ class DataChainSchema(dict[str, DataType]):
         return file.getvalue().removesuffix("\n")
 
 
+def _paired_key_columns(left: list, right: list) -> list[tuple]:
+    """Pair the key columns of both sides. A Union is several columns, so pairing
+    differently shaped sides by position would compare the wrong ones.
+    """
+    if len(left) != len(right):
+        raise DataChainParamsError(
+            f"'on' resolves to {len(left)} columns and 'right_on' to {len(right)}; "
+            "the key must have the same shape on both sides"
+        )
+    return list(zip(left, right, strict=True))
+
+
 class DataChain:
     """DataChain - a data structure for batch data processing and evaluation.
 
@@ -2321,7 +2333,6 @@ class DataChain:
             signals = list(zip(common_signals, common_signals, strict=False))
         elif on is not None and right_on is None:
             right_on = on
-            self.signals_schema.reject_union_keys("subtract", *on)
             resolved_signals = list(self.signals_schema.resolve(*on).db_signals())
             signals = list(zip(resolved_signals, resolved_signals, strict=False))  # type: ignore[arg-type]
         elif on is None and right_on is not None:
@@ -2337,14 +2348,9 @@ class DataChain:
                 raise DataChainParamsError(
                     "'on' and 'right_on' must have the same length"
                 )
-            self.signals_schema.reject_union_keys("subtract", *on)
-            other.signals_schema.reject_union_keys("subtract", *right_on)
-            signals = list(
-                zip(
-                    self.signals_schema.resolve(*on).db_signals(),
-                    other.signals_schema.resolve(*right_on).db_signals(),
-                    strict=False,
-                )  # type: ignore[arg-type]
+            signals = _paired_key_columns(
+                list(self.signals_schema.resolve(*on).db_signals()),
+                list(other.signals_schema.resolve(*right_on).db_signals()),
             )
         return self._evolve(query=self._query.subtract(other._query, signals))  # type: ignore[arg-type]
 
