@@ -967,12 +967,12 @@ def test_union_udf_parent_and_child_overlap(test_session):
         return f"{number}:{value}"
 
     chain = dc.read_values(
-        value=[1, "a"], output={"value": int | str}, session=test_session
+        id=[1, 2],
+        value=[1, "a"],
+        output={"id": int, "value": int | str},
+        session=test_session,
     )
-    assert list(
-        chain.map(
-            result=describe,
-            params=["value.int", "value"],
-            output=str,
-        ).to_values("result")
-    ) == ["1:1", "None:a"]
+    assert _ordered(
+        chain.map(result=describe, params=["value.int", "value"], output=str),
+        "result",
+    ) == [(1, "1:1"), (2, "None:a")]
