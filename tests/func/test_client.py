@@ -141,7 +141,7 @@ def test_scandir_split_past_the_data_opens_no_range(client, tree, cloud_type, mo
     ranges = [c.args[1] for c in calls.call_args_list if not c.kwargs.get("page_size")]
     if cloud_type != "azure":  # Azure on the emulator never splits an old range
         assert probes
-    assert max(ranges) < "2"
+    assert sum(lo > "199" for lo in ranges + probes) <= 4
 
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
@@ -160,6 +160,36 @@ def test_scandir_is_exact_when_the_reader_is_slow(client, tree, processes, mocke
         return paths
 
     assert sorted(sync(get_loop(), slow_reader)) == sorted(tree)
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("tree", [{f"{i:03}": "x" for i in range(200)}], indirect=True)
+def test_s3_probes_only_past_an_open_end(client, tree, mocker):
+    mocker.patch.object(type(client), "LIST_PAGE_SIZE", 4)
+    probes = mocker.spy(client, "_probe")
+    opened = []
+    range_pages = type(client)._range_pages
+
+    def spy(self, prefix, lo, bound, pool):
+        opened.append((lo, bound.hi))
+        return range_pages(self, prefix, lo, bound, pool)
+
+    mocker.patch.object(type(client), "_range_pages", spy)
+
+    assert sorted(e.path for e in scandir(client, "")) == sorted(tree)
+    probed = {c.args[1] for c in probes.call_args_list}
+    assert any(hi is not None and lo for lo, hi in opened)
+    assert all(hi is None for lo, hi in opened if lo in probed)
+
+
+def test_bounded_splits_are_probed_with_large_pages_only():
+    from datachain.client.azure import AzureClient
+    from datachain.client.gcs import GCSClient
+    from datachain.client.s3 import ClientS3
+
+    assert not ClientS3.PROBE_BOUNDED_SPLITS
+    assert GCSClient.PROBE_BOUNDED_SPLITS
+    assert AzureClient.PROBE_BOUNDED_SPLITS
 
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)

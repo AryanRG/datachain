@@ -132,6 +132,7 @@ class Client(ABC):
     # client_config keys this backend treats as credentials.
     CREDENTIAL_KEYS: ClassVar[frozenset[str]] = frozenset()
     LIST_PAGE_SIZE: ClassVar[int] = 1000
+    PROBE_BOUNDED_SPLITS: ClassVar[bool] = True  # pays off with large pages
 
     @classmethod
     def has_explicit_credentials(cls, client_config: dict | None) -> bool:
@@ -510,7 +511,8 @@ class Client(ABC):
             if mid is None:
                 return
             open_ranges += 1
-            if young:  # a few pages ahead of keys just read: no probe needed
+            unprobed = bound.hi is not None and not self.PROBE_BOUNDED_SPLITS
+            if young or unprobed:
                 queue.put_nowait((mid, bound.hi, bound.pages))
                 bound.shrink(mid)
             else:
