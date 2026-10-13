@@ -35,6 +35,7 @@ from datachain.progress import tqdm
 if TYPE_CHECKING:
     from fsspec.spec import AbstractFileSystem
 
+    from datachain.client.listing_worker import Bound, Pool, RangePage
     from datachain.client.writeconfig import WriteConfig
     from datachain.dataset import StorageURI
     from datachain.lib.file import File
@@ -51,7 +52,7 @@ DATA_SOURCE_URI_PATTERN = re.compile(r"^[\w]+:\/\/.*$")
 FRACTION = re.compile(r"(?<=\.)\d+")
 CLOUD_STORAGE_PROTOCOLS = {"s3", "gs", "az", "hf"}
 
-ResultQueue = asyncio.Queue[Sequence["File"]]
+ResultQueue = asyncio.Queue[Sequence[Any]]  # File objects or flat File rows
 Page = tuple[list["File"], str | None]  # files and the last key listed
 
 
@@ -334,12 +335,16 @@ class Client(ABC):
         )
 
     async def scandir(
-        self, start_prefix: str, method: str = "default"
-    ) -> AsyncIterator[Sequence["File"]]:
+        self, start_prefix: str, method: str = "default", processes: bool = False
+    ) -> AsyncIterator[Sequence[Any]]:
+        """Pages of ``File`` objects; with ``processes``, a range listing may parse
+        pages in child processes, which send flat ``File`` rows instead."""
         try:
             impl = getattr(self, f"_fetch_{method}")
         except AttributeError:
             raise ValueError(f"Unknown indexing method '{method}'") from None
+        if processes and getattr(impl, "__func__", None) is Client._fetch_ranges:
+            impl = functools.partial(impl, processes=True)
         result_queue: ResultQueue = asyncio.Queue(2 * LIST_WORKERS)
         main_task = get_loop().create_task(impl(start_prefix, result_queue))
         try:
@@ -401,29 +406,32 @@ class Client(ABC):
             # This ensures the progress bar is closed before any exceptions are raised
             progress_bar.close()
 
-    async def _fetch_ranges(self, start_prefix: str, result_queue: ResultQueue) -> None:
+    async def _fetch_ranges(
+        self, start_prefix: str, result_queue: ResultQueue, processes: bool = False
+    ) -> None:
         """List key ranges ``(lo, hi]`` in parallel; while a worker is idle, a
-        busy range hands over its upper half, split at a key midpoint."""
+        busy range hands over its upper half, split at a key midpoint. With
+        ``processes``, a listing longer than a page moves to child processes."""
+        from .listing_worker import PROCESSES, Bound, Pool
+
         prefix = start_prefix.lstrip(DELIMITER) + DELIMITER if start_prefix else ""
         queue: asyncio.Queue[tuple[str, str | None]] = asyncio.Queue()
         queue.put_nowait(("", None))
         alphabet: set[str] = set()
         open_ranges, found, seeks = 1, False, True
+        pool = Pool(self, PROCESSES) if processes else None
         pbar = tqdm(desc=f"Listing {self.uri}", unit=" objects", leave=False)
 
         async def read(lo: str, hi: str | None) -> None:
             nonlocal open_ranges, found, seeks
             can_split = bool(lo)  # a one-page listing stays one request
+            bound = Bound(hi)
 
-            def keep(key: str) -> bool:
-                return self._is_valid_key(key) and (hi is None or key <= hi)
-
-            async with aclosing(self._pages_after(prefix, lo, keep)) as pages:
-                async for files, last in pages:
-                    first = files[0].path if files else None
+            pages = self._range_pages(prefix, lo, bound, pool)
+            async with aclosing(pages):
+                async for files, first, last in pages:
                     if first is not None and first < lo:  # the server ignores the start
                         seeks = False
-                    files = [f for f in files if lo < f.path]
                     if files:
                         await result_queue.put(files)
                         pbar.update(len(files))
@@ -431,14 +439,14 @@ class Client(ABC):
                     if last is None or last <= lo:
                         continue
                     alphabet.update(last)
-                    if hi is not None and last > hi:
+                    if not bound.keeps(last):
                         return
                     if can_split and seeks and open_ranges < LIST_WORKERS:
-                        mid = key_midpoint(last, hi, alphabet, first)
+                        mid = key_midpoint(last, bound.hi, alphabet, first)
                         if mid is not None:
-                            queue.put_nowait((mid, hi))
+                            queue.put_nowait((mid, bound.hi))
                             open_ranges += 1
-                            hi = mid
+                            bound.shrink(mid)
                     can_split = True
 
         async def worker() -> None:
@@ -462,7 +470,64 @@ class Client(ABC):
         finally:
             for task in [done, *workers]:
                 task.cancel()
+            if pool:
+                pool.close()
             pbar.close()
+
+    async def _range_pages(
+        self, prefix: str, lo: str, bound: "Bound", pool: "Pool | None"
+    ) -> AsyncGenerator["RangePage", None]:
+        """Pages of ``(lo, bound.hi]`` as ``(files, first key, last key)``, listed
+        here or by a child process once one is running. The files of a page's last
+        key wait for the next page, so a range that moves to a child, or off a
+        child that died, resumes after the last complete key."""
+        from .listing_worker import ChildDied, item_path
+
+        done, read_pages = lo, 0  # every key up to ``done`` is complete
+        while True:
+            remote = pool is not None and pool.ready()
+            held: list[Any] = []
+            source = pool.pages if pool and remote else self._local_pages
+            try:
+                async with aclosing(source(prefix, done, bound)) as pages:
+                    async for files, first, last in pages:
+                        files = held + files
+                        read_pages += 1
+                        if last is not None and not bound.keeps(last):
+                            yield (
+                                [f for f in files if bound.keeps(item_path(f))],
+                                first,
+                                last,
+                            )
+                            return
+                        cut = len(files)
+                        while cut and item_path(files[cut - 1]) == item_path(files[-1]):
+                            cut -= 1
+                        files, held = files[:cut], files[cut:]
+                        if files:
+                            done = item_path(files[-1])
+                        if pool and (lo or read_pages > 1):
+                            pool.start()  # more than a page: worth a process
+                        yield files, first, last
+                        if pool and not remote and pool.ready():
+                            break
+                    else:
+                        if held:
+                            yield held, None, None
+                        return
+            except ChildDied:
+                pass
+
+    async def _local_pages(
+        self, prefix: str, lo: str, bound: "Bound"
+    ) -> AsyncGenerator["RangePage", None]:
+        def keep(key: str) -> bool:
+            return self._is_valid_key(key) and bound.keeps(key)
+
+        async with aclosing(self._pages_after(prefix, lo, keep)) as pages:
+            async for files, last in pages:
+                first = files[0].path if files else None
+                yield [f for f in files if lo < f.path], first, last
 
     def _pages_after(
         self, prefix: str, start_after: str, keep: Callable[[str], bool]
