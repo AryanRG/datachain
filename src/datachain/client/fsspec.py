@@ -633,6 +633,9 @@ class Client(ABC):
 class RangeListedClient(Client):
     """A client that lists in parallel key ranges (``RangeListing``)."""
 
+    PROBE_BOUNDED_SPLITS: ClassVar[bool] = True  # pays off with large pages
+    SPLITS_BY_AGE: ClassVar[bool] = True
+
     @staticmethod
     def key_order(key: str) -> Any:
         """The sort key of the order the server lists keys in."""

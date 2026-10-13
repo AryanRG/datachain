@@ -32,6 +32,7 @@ class GCSClient(RangeListedClient):
     protocol = "gs"
     CREDENTIAL_KEYS = frozenset({"token"})
     LIST_PAGE_SIZE = 5000
+    SPLITS_BY_AGE = False  # far splits and their probes cost more than they save
     # GCS sends every field otherwise
     LIST_FIELDS: ClassVar[tuple[str, ...]] = (
         "name",
