@@ -246,6 +246,10 @@ async def _serve(client: "Client", inp: BinaryIO, out: BinaryIO) -> None:
             bounds.pop(rid, None)
 
     threading.Thread(target=pump, daemon=True).start()
+    try:  # warm up DNS, TLS, credentials and the bucket region before taking work:
+        await client._probe("", "")  # a cold first request takes twice as long
+    except Exception:
+        logger.debug("Listing process warm-up failed", exc_info=True)
     write("ready", None)
     while (msg := await inbox.get()) is not None:
         kind, rid, *args = msg
