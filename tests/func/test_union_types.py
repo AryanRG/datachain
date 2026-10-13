@@ -575,7 +575,7 @@ def test_to_storage_takes_a_type_qualified_signal(tmp_path, test_session):
         session=test_session,
     )
     out = tmp_path / "out"
-    with pytest.raises(SignalResolvingError, match="ambiguous|not found"):
+    with pytest.raises(SignalResolvingError, match=r"ambiguous|not found"):
         chain.to_storage(out.as_posix(), signal="f", placement="filename")
 
     chain.to_storage(out.as_posix(), signal="f.TextFile", placement="filename")

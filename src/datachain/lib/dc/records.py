@@ -1,6 +1,6 @@
 import hashlib
 from collections.abc import Iterable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import sqlalchemy
 
@@ -27,7 +27,7 @@ def _flatten_record(record: dict, signal_schema: SignalSchema) -> dict:
     {"person": Person(...)} -> {"person__name": "Alice", ...}. Plain scalars and
     already-flattened keys (e.g. "person__name") pass through unchanged.
     """
-    flattened = {}
+    flattened: dict[str, Any] = {}
 
     for key, value in record.items():
         anno = signal_schema.values.get(key)
@@ -35,7 +35,7 @@ def _flatten_record(record: dict, signal_schema: SignalSchema) -> dict:
             union_layout(anno) is not None or classify_field(anno).is_model
         )
         if needs_flatten:
-            db_columns = signal_schema.db_signals(name=key)
+            db_columns = cast("list[str]", signal_schema.db_signals(name=key))
             flat_values = flatten_value(value, anno)
             flattened.update(dict(zip(db_columns, flat_values, strict=True)))
         else:
