@@ -186,6 +186,7 @@ class UdfSignature:  # noqa: PLW1641
                     )
             udf_output_map = output
         else:
+            # the reason first: otherwise a rejected type reads as a bad output shape
             validate_chain_type(output)
             if not is_chain_type(output):
                 raise UdfSignatureError(

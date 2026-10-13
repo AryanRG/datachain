@@ -476,13 +476,13 @@ def validate_chain_type(anno: Any) -> None:
         inner, _ = unwrap_optional(current)
         arms, _ = union_arms(inner)
         if len(arms) >= 2:
-            union_layout(inner)  # raises with the reason a layout is impossible
+            _reject_untaggable_arms(inner)
             if collection:
                 _reject_same_json_scalars(arms, collection, where)
-            if collection and not in_model:
-                _reject_model_arms(inner, collection)
-            elif collection:
-                _reject_same_shaped_arms(arms, where)
+                if in_model:
+                    _reject_same_shaped_arms(arms, where)
+                else:
+                    _reject_model_arms(inner, collection)
             stack.extend((arm, collection, in_model, where) for arm in arms)
             continue
         origin = get_origin(inner)
@@ -501,6 +501,12 @@ def validate_chain_type(anno: Any) -> None:
                 (f_info.annotation, collection, True, f"{fr.__name__}.{name}")
                 for name, f_info in fr.model_fields.items()
             )
+
+
+def _reject_untaggable_arms(anno: Any) -> None:
+    """Raise the reason a union cannot be laid out in columns -- arms that share a
+    storage name, one named like the discriminator, one that cannot name a column."""
+    union_layout(anno)
 
 
 def _location(where: str, kind: str = "") -> str:

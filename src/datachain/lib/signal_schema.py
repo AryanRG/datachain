@@ -21,6 +21,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Final,
+    NamedTuple,
     Optional,
     Union,
     get_args,
@@ -306,6 +307,21 @@ def create_feature_model(
     ModelStore.register(model)
 
     return model
+
+
+class SignalReader(NamedTuple):
+    """How one signal is read: its annotation, its tagged-union layout or model when
+    it has one, and the db columns feeding it, in order."""
+
+    anno: DataType
+    layout: "UnionLayout | None"
+    model: "type[BaseModel] | None"
+    columns: list[str]
+
+
+def _tag_col(prefix: str) -> str:
+    """DB name of the ``_type_tag`` discriminator under ``prefix``."""
+    return f"{prefix}{DEFAULT_DELIMITER}{TYPE_TAG_FIELD}"
 
 
 def _model_reader(build_model: Callable[[type[BaseModel], dict], Any]) -> ModelReader:
@@ -656,30 +672,32 @@ class SignalSchema:
         return res
 
     @cached_property
-    def _signal_plan(self) -> dict[str, tuple[DataType, Any, Any, list[str]]]:
-        """Per signal, worked out once instead of on every row: its annotation, its
-        tagged-union layout, its model, and the db columns its reader consumes."""
-        plan: dict[str, tuple[DataType, Any, Any, list[str]]] = {}
+    def _signal_plan(self) -> dict[str, SignalReader]:
+        """Each signal's reader, worked out once per schema instead of on every row."""
+        plan: dict[str, SignalReader] = {}
         for name, anno in self.values.items():
             layout = union_layout(anno)
             inner, _ = unwrap_optional(anno)
-            model = None if layout is not None else ModelStore.to_pydantic(inner)
-            cols = (
-                []
-                if name in self.setup_func
-                else [
-                    DEFAULT_DELIMITER.join(
-                        (*col.path, TYPE_TAG_FIELD) if col.is_sentinel else col.path
-                    )
-                    for col in iter_field_columns(anno, tuple(name.split(".")))
-                ]
+            plan[name] = SignalReader(
+                anno=anno,
+                layout=layout,
+                model=None if layout is not None else ModelStore.to_pydantic(inner),
+                columns=(
+                    []
+                    if name in self.setup_func
+                    else [
+                        DEFAULT_DELIMITER.join(
+                            (*col.path, TYPE_TAG_FIELD) if col.is_sentinel else col.path
+                        )
+                        for col in iter_field_columns(anno, tuple(name.split(".")))
+                    ]
+                ),
             )
-            plan[name] = (anno, layout, model, cols)
         return plan
 
     @staticmethod
     def _read_signal(
-        plan: tuple[DataType, Any, Any],
+        reader: "SignalReader",
         row: Sequence[Any],
         pos: int,
         read_model: ModelReader,
@@ -688,14 +706,13 @@ class SignalSchema:
         """Read one top-level signal value at ``pos``. A tagged union (including
         ``Optional[Model]``) hydrates only its active arm; ``convert_scalar`` (if
         given) post-processes a plain scalar leaf."""
-        anno, layout, model = plan
-        if layout is not None:
-            return read_union(layout, row, pos, read_model)
-        if model is not None:
-            return read_model(model, row, pos)
+        if reader.layout is not None:
+            return read_union(reader.layout, row, pos, read_model)
+        if reader.model is not None:
+            return read_model(reader.model, row, pos)
         value = row[pos]
         if convert_scalar is not None:
-            value = convert_scalar(anno, value)
+            value = convert_scalar(reader.anno, value)
         return value, pos + 1
 
     def row_to_objs(self, row_dict: "RowDict") -> list[Any]:
@@ -713,13 +730,13 @@ class SignalSchema:
         read_model = _model_reader(build_model)
         convert = partial(self._convert_feature_value, catalog=None, cache=False)
         objs: list[Any] = []
-        for name, (anno, layout, model, cols) in self._signal_plan.items():
+        for name, reader in self._signal_plan.items():
             if self.setup_values and name in self.setup_values:
                 objs.append(self.setup_values.get(name))
                 continue
-            row = [row_dict[col] for col in cols]
+            row = [row_dict[col] for col in reader.columns]
             obj, _ = self._read_signal(
-                (anno, layout, model),
+                reader,
                 row,
                 0,
                 read_model,
@@ -942,10 +959,8 @@ class SignalSchema:
         read_model = _model_reader(build_model)
         res = []
         pos = 0
-        for anno, layout, model, _cols in self._signal_plan.values():
-            value, pos = self._read_signal(
-                (anno, layout, model), row, pos, read_model, convert_scalar
-            )
+        for reader in self._signal_plan.values():
+            value, pos = self._read_signal(reader, row, pos, read_model, convert_scalar)
             res.append(value)
         return res
 
@@ -1250,7 +1265,7 @@ class SignalSchema:
         """DB name of the ``_type_tag`` discriminator when ``db_col`` is itself a
         tagged-union node (``Optional[DataModel]`` or a multi-arm union), else None."""
         if db_col in self._tagged_db_cols:
-            return f"{db_col}{DEFAULT_DELIMITER}{TYPE_TAG_FIELD}"
+            return _tag_col(db_col)
         return None
 
     def legacy_tag_columns(self, column_types: Mapping[str, Any]) -> list[str]:
@@ -1258,7 +1273,7 @@ class SignalSchema:
         names, which queries over this schema cannot read."""
         legacy = []
         for prefix in self._tagged_db_cols:
-            tag = f"{prefix}{DEFAULT_DELIMITER}{TYPE_TAG_FIELD}"
+            tag = _tag_col(prefix)
             stored = column_types.get(tag)
             if stored is None:
                 continue
@@ -1266,28 +1281,40 @@ class SignalSchema:
                 legacy.append(tag)
         return legacy
 
+    @cached_property
+    def _tagged_arm_cols(self) -> list[tuple[str, list[tuple[str, str]]]]:
+        """Per tagged node: its discriminator column, and each arm's column prefix
+        with the name its tag holds."""
+        return [
+            (
+                _tag_col(prefix),
+                [
+                    (
+                        f"{prefix}{DEFAULT_DELIMITER}{arm_selector(arm)}"
+                        if layout.use_slots
+                        else prefix,
+                        arm_selector(arm),
+                    )
+                    for arm in layout.arms
+                ],
+            )
+            for prefix, layout in self._tagged_db_cols.items()
+        ]
+
     def infer_type_tags(self, flat: dict[str, Any]) -> None:
         """Fill a pre-flattened record's missing ``_type_tag`` from the arm columns
         carrying a value: ``to_records()`` hides it, so a round trip rebuilds it."""
-        for prefix, layout in self._tagged_db_cols.items():
-            tag_col = f"{prefix}{DEFAULT_DELIMITER}{TYPE_TAG_FIELD}"
+        for tag_col, arms in self._tagged_arm_cols:
             if tag_col in flat:
                 continue
-            for arm in layout.arms:
-                arm_col = (
-                    f"{prefix}{DEFAULT_DELIMITER}{arm_selector(arm)}"
-                    if layout.use_slots
-                    else prefix
-                )
+            for arm_col, name in arms:
                 if any(
                     value is not None
-                    and name != tag_col
-                    and (
-                        name == arm_col or name.startswith(arm_col + DEFAULT_DELIMITER)
-                    )
-                    for name, value in flat.items()
+                    and col != tag_col
+                    and (col == arm_col or col.startswith(arm_col + DEFAULT_DELIMITER))
+                    for col, value in flat.items()
                 ):
-                    flat[tag_col] = arm_selector(arm)
+                    flat[tag_col] = name
                     break
 
     def enclosing_type_tag(self, db_col: str) -> str | None:
@@ -1296,7 +1323,7 @@ class SignalSchema:
         itself a discriminator).
         """
         for prefix, _ in self._tagged_ancestors(db_col):
-            sentinel = f"{prefix}{DEFAULT_DELIMITER}{TYPE_TAG_FIELD}"
+            sentinel = _tag_col(prefix)
             return None if sentinel == db_col else sentinel
         return None
 
