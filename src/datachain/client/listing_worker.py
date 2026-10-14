@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from datetime import datetime
 
     from datachain.client.fsspec import Client
 
@@ -21,6 +22,7 @@ PROCESSES = min(4, (os.cpu_count() or 1) - 1)
 FRAME = struct.Struct("<Q")
 # files, first key, last key; files are ``row_type(File)`` rows
 RangePage = tuple[list[Any], str | None, str | None]
+LAST_MODIFIED = 6
 
 
 class Bound:
@@ -135,7 +137,12 @@ class Child:
 class Pool:
     """Child processes listing ranges for one ``Client._fetch_ranges`` call."""
 
-    def __init__(self, client: "Client", size: int = 0) -> None:
+    def __init__(
+        self,
+        client: "Client",
+        size: int = 0,
+        encode_time: "Callable[[datetime], Any] | None" = None,
+    ) -> None:
         try:
             self.spec = dump(
                 (
@@ -144,6 +151,7 @@ class Pool:
                     client.fs_kwargs,
                     client.cache,
                     client.LIST_PAGE_SIZE,
+                    encode_time,
                 )
             )
         except Exception:  # noqa: BLE001
@@ -214,7 +222,25 @@ class Pool:
             child.kill()
 
 
-async def _serve(client: "Client", inp: BinaryIO, out: BinaryIO) -> None:
+def _plain_rows(
+    files: list, encode_time: "Callable[[datetime], Any] | None"
+) -> list[tuple]:
+    # plain tuples: a row type would unpickle per row in Python
+    if encode_time is None:
+        return [tuple(f) for f in files]
+    at = LAST_MODIFIED
+    return [
+        (*f[:at], None if f[at] is None else encode_time(f[at]), *f[at + 1 :])
+        for f in files
+    ]
+
+
+async def _serve(
+    client: "Client",
+    inp: BinaryIO,
+    out: BinaryIO,
+    encode_time: "Callable[[datetime], Any] | None" = None,
+) -> None:
     loop = asyncio.get_running_loop()
     inbox: asyncio.Queue = asyncio.Queue()
 
@@ -236,9 +262,7 @@ async def _serve(client: "Client", inp: BinaryIO, out: BinaryIO) -> None:
             pages = client._local_pages(prefix, lo, bound)
             async with aclosing(pages):
                 async for files, first, last in pages:
-                    # plain tuples: unpickling a row type calls its __reduce__ per
-                    # row, while Pool.pages rebuilds rows with tuple.__new__ in C
-                    write("page", rid, [tuple(f) for f in files], first, last)
+                    write("page", rid, _plain_rows(files, encode_time), first, last)
                     if last is not None and not bound.keeps(last):
                         break
             write("end", rid)
@@ -276,10 +300,10 @@ def main() -> None:
 
     out = os.fdopen(os.dup(1), "wb")
     os.dup2(2, 1)  # stray prints must not corrupt the frames
-    cls, name, fs_kwargs, cache, page_size = load(sys.stdin.buffer)
+    cls, name, fs_kwargs, cache, page_size, encode_time = load(sys.stdin.buffer)
     client = cls(name, fs_kwargs, cache)
     client.LIST_PAGE_SIZE = page_size
-    sync(get_loop(), _serve, client, sys.stdin.buffer, out)
+    sync(get_loop(), _serve, client, sys.stdin.buffer, out, encode_time)
 
 
 if __name__ == "__main__":

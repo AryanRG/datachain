@@ -458,7 +458,6 @@ class UDFBase(AbstractUDF):
         return tuple(self._obj_to_list(row))
 
     def _insert_row_type(self) -> type | None:
-        """The ``row_type`` whose rows are the output columns as they are."""
         if len(self.output.values) != 1:
             return None
         anno = next(iter(self.output.values.values()))
@@ -833,8 +832,6 @@ class Generator(UDFBase):
                 for result_obj, is_last in with_last_flag(result_objs):
                     has_output = True
                     if type(result_obj) is row_cls:
-                        # already in column order: process_udf_outputs inserts it;
-                        # + is three times faster here than unpacking
                         yield result_obj + (row_id, not is_last, None)  # noqa: RUF005
                         continue
                     udf_output = self._flatten_row(result_obj)

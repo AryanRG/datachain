@@ -342,7 +342,11 @@ class Client(ABC):
         )
 
     async def scandir(
-        self, start_prefix: str, method: str = "default", processes: bool = False
+        self,
+        start_prefix: str,
+        method: str = "default",
+        processes: bool = False,
+        encode_time: Callable[[datetime], Any] | None = None,
     ) -> AsyncIterator[Sequence[Any]]:
         """Pages of ``File`` objects, or of ``row_type(File)`` rows from a range
         listing; with ``processes``, a range listing may parse pages in child
@@ -352,7 +356,7 @@ class Client(ABC):
         except AttributeError:
             raise ValueError(f"Unknown indexing method '{method}'") from None
         if processes and getattr(impl, "__func__", None) is Client._fetch_ranges:
-            impl = functools.partial(impl, processes=True)
+            impl = functools.partial(impl, processes=True, encode_time=encode_time)
         result_queue: ResultQueue = asyncio.Queue(2 * LIST_WORKERS)
         main_task = get_loop().create_task(impl(start_prefix, result_queue))
         try:
@@ -415,7 +419,11 @@ class Client(ABC):
             progress_bar.close()
 
     async def _fetch_ranges(  # noqa: C901, PLR0915
-        self, start_prefix: str, result_queue: ResultQueue, processes: bool = False
+        self,
+        start_prefix: str,
+        result_queue: ResultQueue,
+        processes: bool = False,
+        encode_time: Callable[[datetime], Any] | None = None,
     ) -> None:
         """List key ranges ``(lo, hi]`` in parallel; while a worker is idle, a
         busy range hands over its upper half, split at a key midpoint. A young
@@ -429,7 +437,7 @@ class Client(ABC):
         queue.put_nowait(("", None, 0))
         alphabet: set[str] = set()
         open_ranges, found, seeks = 1, False, True
-        pool = Pool(self, PROCESSES) if processes else None
+        pool = Pool(self, PROCESSES, encode_time) if processes else None
         in_flight = PROCESS_LIST_WORKERS if pool and pool.size else LIST_WORKERS
         probes: set[asyncio.Task] = set()
         pbar = tqdm(desc=f"Listing {self.uri}", unit=" objects", leave=False)

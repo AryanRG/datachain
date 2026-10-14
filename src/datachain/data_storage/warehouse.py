@@ -7,6 +7,7 @@ import string
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Union, cast
 from urllib.parse import urlparse
 
@@ -516,8 +517,11 @@ class AbstractWarehouse(ABC, Serializable):
         """Convert File entries so they can be passed on to `insert_rows()`"""
 
     def insert_columns(self, table: sa.Table) -> list[str] | None:
-        """Columns of the tuples `insert_rows()` takes for `table` in order,
-        None if it takes only dicts."""
+        """Columns of tuple rows `insert_rows()` takes for `table`, or None."""
+        return None
+
+    def tuple_datetime_encoder(self) -> Callable[[datetime], Any] | None:
+        """Encodes datetimes of tuple rows ahead of `insert_rows()`, or None."""
         return None
 
     def insert_rows(

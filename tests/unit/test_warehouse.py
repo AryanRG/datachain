@@ -1,5 +1,9 @@
 import base64
 import json
+import os
+import pickle
+import subprocess
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -225,3 +229,21 @@ def test_select_node_fields_by_parent_path_tar_wildcards_are_literal(
         "dir_%1/b.csv",
         "dir_%1/nested/c.csv",
     ]
+
+
+def test_tuple_datetime_encoder_loads_without_numpy(warehouse):
+    root = os.path.dirname(os.path.dirname(dc.__file__))
+    code = (
+        "import pickle, sys\n"
+        "import datachain.client.listing_worker, datachain.client.s3\n"
+        "pickle.loads(sys.stdin.buffer.read())\n"
+        "print('numpy' in sys.modules)"
+    )
+    out = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", code],
+        input=pickle.dumps(warehouse.tuple_datetime_encoder()),
+        capture_output=True,
+        check=True,
+        env={**os.environ, "PYTHONPATH": root},
+    )
+    assert out.stdout.strip() == b"False"

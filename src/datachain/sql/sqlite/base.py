@@ -17,6 +17,7 @@ from sqlalchemy.sql.expression import case
 from sqlalchemy.sql.functions import func
 
 from datachain import json
+from datachain.sql.datetimes import serialize_datetime
 from datachain.sql.functions import (
     aggregate,
     array,
@@ -284,28 +285,14 @@ def sqlite_datetime_cast(value):
         value = value.decode()
 
     if isinstance(value, datetime):
-        return _serialize_datetime(value)
+        return serialize_datetime(value)
     if isinstance(value, date):
-        return _serialize_datetime(datetime.combine(value, datetime.min.time()))
+        return serialize_datetime(datetime.combine(value, datetime.min.time()))
     if not isinstance(value, str):
         raise TypeError(datetime_cast_input_error_message(type(value).__name__))
 
     parsed = parse_datetime_text(value)
-    return _serialize_datetime(parsed)
-
-
-def _normalize_datetime_for_storage(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value
-
-    try:
-        return value.astimezone(timezone.utc).replace(tzinfo=None)
-    except (OverflowError, ValueError, OSError):
-        if value.year == MAXYEAR:
-            return datetime.max.replace(tzinfo=timezone.utc).replace(tzinfo=None)
-        if value.year == MINYEAR:
-            return datetime.min.replace(tzinfo=timezone.utc).replace(tzinfo=None)
-        raise
+    return serialize_datetime(parsed)
 
 
 def _normalize_datetime_for_read(value: datetime) -> datetime:
@@ -320,10 +307,6 @@ def _normalize_datetime_for_read(value: datetime) -> datetime:
         if value.year == MINYEAR:
             return datetime.min.replace(tzinfo=timezone.utc)
         raise
-
-
-def _serialize_datetime(value: datetime) -> str:
-    return _normalize_datetime_for_storage(value).isoformat(" ")
 
 
 def register_user_defined_sql_functions() -> None:
@@ -437,7 +420,7 @@ def register_user_defined_sql_functions() -> None:
 
 
 def adapt_datetime(val: datetime) -> str:
-    return _serialize_datetime(val)
+    return serialize_datetime(val)
 
 
 def convert_datetime(val: bytes) -> datetime:

@@ -3,6 +3,7 @@ import os
 import sqlite3
 from collections.abc import Callable, Iterable, Sequence
 from contextlib import contextmanager
+from datetime import datetime
 from functools import cached_property, wraps
 from itertools import groupby
 from time import sleep
@@ -41,6 +42,7 @@ from datachain.error import (
 from datachain.namespace import Namespace
 from datachain.progress import tqdm
 from datachain.project import Project
+from datachain.sql.datetimes import serialize_datetime
 from datachain.sql.sqlite import create_user_defined_sql_functions, sqlite_dialect
 from datachain.sql.sqlite.base import load_usearch_extension
 from datachain.sql.types import SQLType
@@ -802,6 +804,9 @@ class SQLiteWarehouse(AbstractWarehouse):
     def insert_columns(self, table: Table) -> list[str]:
         sys_names = {c.name for c in self.schema.dataset_row_cls.sys_columns()}
         return [c.name for c in table.columns if c.name not in sys_names]
+
+    def tuple_datetime_encoder(self) -> Callable[[datetime], str]:
+        return serialize_datetime
 
     def _insert_tuples_sql(self, table: Table) -> str:
         quote = self.db.dialect.identifier_preparer.quote

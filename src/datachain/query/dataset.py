@@ -576,7 +576,6 @@ def process_udf_outputs(
     else:
         udf_kind = "map"
 
-    # a generator yields tuples of these columns when its rows need no adjusting
     columns = [*udf.output, "sys__input_id", "sys__partial", "sys__empty"]
     as_tuples = warehouse.insert_columns(udf_table) == columns and all(
         default is None for *_, default in udf_col_types

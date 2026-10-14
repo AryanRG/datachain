@@ -84,7 +84,9 @@ def listing_dataset_expired(lst_ds) -> bool:
     return datetime.now(timezone.utc) > expires
 
 
-def list_bucket(uri: str, cache, client_config=None) -> Callable:
+def list_bucket(
+    uri: str, cache, client_config=None, encode_time: Callable | None = None
+) -> Callable:
     """
     Function that returns another generator function that yields File objects
     from bucket where each File represents one bucket entry.
@@ -94,7 +96,9 @@ def list_bucket(uri: str, cache, client_config=None) -> Callable:
         config = client_config or {}
         client = Client.get_client(uri, cache, **config)  # type: ignore[arg-type]
         _, path = Client.parse_url(uri)
-        pages = client.scandir(path.rstrip("/"), processes=True)
+        pages = client.scandir(
+            path.rstrip("/"), processes=True, encode_time=encode_time
+        )
         for entries in iter_over_async(pages, get_loop()):
             yield from entries
 

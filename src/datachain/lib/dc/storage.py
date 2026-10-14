@@ -285,7 +285,12 @@ def read_storage(  # noqa: PLR0913
                     project=listing_project_name,
                 )
                 .gen(
-                    list_bucket(lst_uri, cache, client_config=client_config),
+                    list_bucket(
+                        lst_uri,
+                        cache,
+                        client_config=client_config,
+                        encode_time=catalog.warehouse.tuple_datetime_encoder(),
+                    ),
                     output={f"{column}": file_type},
                 )
                 # for internal listing datasets, we always bump major version

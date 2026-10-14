@@ -3,12 +3,13 @@ import time
 from contextlib import aclosing
 
 import pytest
+import sqlalchemy as sa
 from fsspec.asyn import sync
 
 import datachain as dc
 from datachain.asyn import get_loop
 from datachain.client import Client
-from datachain.client.listing_worker import Child, Pool, item_path
+from datachain.client.listing_worker import LAST_MODIFIED, Child, Pool, item_path
 from datachain.lib.convert.flatten import flatten, row_type
 from datachain.lib.file import File
 from datachain.lib.listing import list_bucket
@@ -200,3 +201,38 @@ def test_listing_rows_are_normalized_files(client, tree):
     assert rows
     assert all(type(r) is row_type(File) for r in rows)
     assert [flatten(File(**r._asdict())) for r in rows] == [tuple(r) for r in rows]
+
+
+def test_last_modified_column():
+    assert row_type(File)._fields[LAST_MODIFIED] == "last_modified"
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("tree", [TREE], indirect=True)
+def test_children_encode_times_as_stored(
+    client, tree, children, remote_rows, test_session
+):
+    warehouse = test_session.catalog.warehouse
+
+    def stored(name, encode_time):
+        dataset = (
+            dc.read_values(seed=[0], session=test_session)
+            .gen(
+                file=list_bucket(
+                    f"{client.uri}/",
+                    None,
+                    client_config=client.fs_kwargs,
+                    encode_time=encode_time,
+                )
+            )
+            .save(name)
+            .dataset
+        )
+        table = warehouse.dataset_rows(dataset, dataset.latest_version).get_table()
+        cols = [c for c in table.c if not c.name.startswith("sys__")]
+        query = sa.select(*cols, *(sa.func.typeof(c) for c in cols))
+        return sorted(warehouse.db.execute(query), key=repr)
+
+    encoded = stored("encoded", warehouse.tuple_datetime_encoder())
+    assert {type(r[LAST_MODIFIED]) for r in remote_rows} == {str}
+    assert encoded == stored("plain", None)
