@@ -48,30 +48,34 @@ def test_normalize_s3_kwargs_secret_and_token():
 @pytest.mark.parametrize(
     "anon_effect, auth_effect, expected",
     [
-        (None, None, BucketStatus(True, "anonymous")),
+        ((200, "r"), None, BucketStatus(True, "anonymous")),
+        ((404, None), None, BucketStatus(False, "denied", "S3 bucket 'b' not found")),
+        ((403, "r"), (200, "r"), BucketStatus(True, "authenticated")),
+        ((403, "r"), NoCredentialsError(), BucketStatus(True, "denied", S3_DENIED)),
+        ((403, "r"), (403, "r"), BucketStatus(True, "denied", S3_DENIED)),
         (
-            FileNotFoundError,
-            None,
-            BucketStatus(False, "denied", "S3 bucket 'b' not found"),
-        ),
-        (PermissionError, None, BucketStatus(True, "authenticated")),
-        (PermissionError, NoCredentialsError, BucketStatus(True, "denied", S3_DENIED)),
-        (PermissionError, PermissionError, BucketStatus(True, "denied", S3_DENIED)),
-        (
-            PermissionError,
-            FileNotFoundError,
+            (403, None),
+            (404, None),
             BucketStatus(False, "denied", "S3 bucket 'b' not found"),
         ),
     ],
     ids=["anon-ok", "anon-404", "auth-ok", "auth-no-creds", "auth-perm", "auth-404"],
 )
 @patch("datachain.client.s3.S3FileSystem")
-def test_s3_bucket_status(mock_fs_cls, anon_effect, auth_effect, expected):
-    anon_fs, auth_fs = MagicMock(), MagicMock()
-    mock_fs_cls.side_effect = [anon_fs, auth_fs]
-    anon_fs._info = AsyncMock(side_effect=anon_effect)
-    auth_fs._info = AsyncMock(side_effect=auth_effect)
+@patch("datachain.client.s3._head_bucket")
+def test_s3_bucket_status(head, _fs_cls, anon_effect, auth_effect, expected):
+    head.side_effect = [anon_effect, auth_effect]
     assert ClientS3.bucket_status("b") == expected
+
+
+@patch("datachain.client.s3.S3FileSystem")
+@patch("datachain.client.s3._head_bucket", return_value=(200, "eu-west-3"))
+def test_s3_bucket_region_reaches_the_listing_client(_head, _fs_cls):
+    ClientS3.bucket_status("regional")
+
+    client = ClientS3.from_name("regional", MagicMock(), {})
+    assert client.fs_kwargs["region_name"] == "eu-west-3"
+    assert "region_name" not in ClientS3.from_name("other", MagicMock(), {}).fs_kwargs
 
 
 @pytest.mark.parametrize(

@@ -1,4 +1,5 @@
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -6,6 +7,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+import datachain as dc
 from datachain.client import Client
 from datachain.client.fsspec import key_midpoint
 from datachain.client.local import FileClient
@@ -83,3 +85,20 @@ def test_key_midpoint_stays_near_dense_keys():
         < key_midpoint("img/0999.jpg", None, alphabet, first="img/0000.jpg")
         < "img/5"
     )
+
+
+def test_s3_client_loads_no_other_backend():
+    code = (
+        "import sys\n"
+        "from datachain.client import Client\n"
+        "Client.get_implementation('s3://bucket/key')\n"
+        "print(sorted({'gcsfs', 'adlfs', 'huggingface_hub'} & set(sys.modules)))"
+    )
+    root = os.path.dirname(os.path.dirname(dc.__file__))
+    out = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", code],
+        capture_output=True,
+        check=True,
+        env={**os.environ, "PYTHONPATH": root},
+    )
+    assert out.stdout.strip() == b"[]"

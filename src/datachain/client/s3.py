@@ -8,7 +8,7 @@ from xml.etree.ElementTree import Element, fromstring, tostring
 from aiobotocore.parsers import AioResponseParserFactory, AioRestXMLParser
 from aiobotocore.session import AioSession
 from botocore import handlers
-from botocore.exceptions import NoCredentialsError
+from botocore.exceptions import ClientError, NoCredentialsError
 from botocore.model import Shape
 from botocore.utils import parse_timestamp
 from fsspec.asyn import get_loop, sync
@@ -20,6 +20,7 @@ from datachain.lib.file import File
 from .fsspec import DELIMITER, BucketStatus, Client, Page, ResultQueue, iso_timestamp
 
 if TYPE_CHECKING:
+    from datachain.cache import Cache
     from datachain.client.writeconfig import WriteConfig
 
 
@@ -128,6 +129,20 @@ def _session(profile: str | None) -> AioSession:
 
 
 FileRow = row_type(File)
+_BUCKET_REGIONS: dict[str, str] = {}
+
+
+async def _head_bucket(fs: S3FileSystem, name: str) -> tuple[int, str | None]:
+    await fs.set_session()
+    s3 = await fs.get_s3()
+    try:
+        out = await s3.head_bucket(Bucket=name)
+    except ClientError as e:
+        out = e.response
+    meta = out["ResponseMetadata"]
+    return meta["HTTPStatusCode"], meta.get("HTTPHeaders", {}).get(
+        "x-amz-bucket-region"
+    )
 
 
 class ClientS3(Client):
@@ -169,7 +184,11 @@ class ClientS3(Client):
             kwargs["session"] = _session(kwargs.pop("profile", None))
 
         # remove this `if` when https://github.com/fsspec/s3fs/pull/929 lands
-        if not os.environ.get("AWS_REGION") and not os.environ.get("AWS_ENDPOINT_URL"):
+        if (
+            not os.environ.get("AWS_REGION")
+            and not os.environ.get("AWS_ENDPOINT_URL")
+            and "region_name" not in kwargs["config_kwargs"]
+        ):
             # caching bucket regions to use the right one in signed urls, otherwise
             # it tries to randomly guess and creates wrong signature
             kwargs.setdefault("cache_regions", True)
@@ -187,22 +206,21 @@ class ClientS3(Client):
 
     @classmethod
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:
-        # Step 1: Anonymous probe. cache_regions=True handles PermanentRedirect
-        # (bucket-in-wrong-region) transparently so the bucket is found → exists=True.
-        # Preserve endpoint/region settings from caller kwargs; strip credentials.
+        # Step 1: Anonymous probe. Preserve endpoint/region settings from caller
+        # kwargs; strip credentials.
         strip = cls.CREDENTIAL_KEYS | {"anon"}
         anon_kwargs = cls._normalize_s3_kwargs(
             {k: v for k, v in kwargs.items() if k not in strip}
         )
         anon_kwargs["anon"] = True
-        anon_kwargs.setdefault("cache_regions", True)
-        anon_fs = S3FileSystem(**anon_kwargs)
-        try:
-            sync(get_loop(), anon_fs._info, name)
+        status, region = sync(
+            get_loop(), _head_bucket, S3FileSystem(**anon_kwargs), name
+        )
+        if region and "client_kwargs" not in anon_kwargs:
+            _BUCKET_REGIONS[name] = region
+        if status == 200:
             return BucketStatus(exists=True, access="anonymous")
-        except PermissionError:
-            pass
-        except FileNotFoundError:
+        if status == 404:
             return BucketStatus(
                 exists=False, access="denied", error=f"S3 bucket '{name}' not found"
             )
@@ -212,23 +230,37 @@ class ClientS3(Client):
         auth_kwargs = cls._normalize_s3_kwargs(
             {k: v for k, v in kwargs.items() if k != "anon"}
         )
-        auth_kwargs.setdefault("cache_regions", True)
-
-        auth_fs = S3FileSystem(**auth_kwargs)
-        try:
-            sync(get_loop(), auth_fs._info, name)
-            return BucketStatus(exists=True, access="authenticated")
-        except (NoCredentialsError, PermissionError):
-            return BucketStatus(
-                exists=True,
-                access="denied",
-                error=f"Access denied to S3 bucket '{name}'"
-                " — check AWS credentials/permissions",
+        if region:
+            auth_kwargs.setdefault("config_kwargs", {}).setdefault(
+                "region_name", region
             )
-        except FileNotFoundError:
+        try:
+            status, _ = sync(
+                get_loop(), _head_bucket, S3FileSystem(**auth_kwargs), name
+            )
+        except NoCredentialsError:
+            status = 403
+        if status == 200:
+            return BucketStatus(exists=True, access="authenticated")
+        if status == 404:
             return BucketStatus(
                 exists=False, access="denied", error=f"S3 bucket '{name}' not found"
             )
+        return BucketStatus(
+            exists=True,
+            access="denied",
+            error=f"Access denied to S3 bucket '{name}'"
+            " — check AWS credentials/permissions",
+        )
+
+    @classmethod
+    def from_name(cls, name: str, cache: "Cache", kwargs: dict[str, Any]) -> "Client":
+        region = _BUCKET_REGIONS.get(name)
+        if region and not {"region_name", "client_kwargs", "aws_endpoint_url"} & set(
+            kwargs
+        ):
+            kwargs = {**kwargs, "region_name": region}
+        return cls(name, kwargs, cache)
 
     @staticmethod
     def _write_kwargs(cfg: "WriteConfig", *, streaming: bool) -> dict[str, Any]:
