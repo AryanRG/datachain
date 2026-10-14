@@ -271,8 +271,6 @@ class Pool:
 async def _serve(
     client: "RangeListedClient", prefix: str, inp: BinaryIO, out: BinaryIO
 ) -> None:
-    from datachain.lib.convert.flatten import flatten
-
     loop = asyncio.get_running_loop()
     inbox: asyncio.Queue = asyncio.Queue()
 
@@ -294,8 +292,8 @@ async def _serve(
         except Exception as e:  # noqa: BLE001
             write("error", rid, picklable(e))
         else:
-            # flat rows: a File would unpickle per row in Python
-            write("page", rid, [flatten(f) for f in page.rows], *page[1:])
+            # plain tuples: a row type would unpickle per row in Python
+            write("page", rid, [tuple(r) for r in page.rows], *page[1:])
 
     tasks: set[asyncio.Task] = set()
     threading.Thread(target=pump, daemon=True).start()
