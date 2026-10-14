@@ -576,6 +576,12 @@ def process_udf_outputs(
     else:
         udf_kind = "map"
 
+    # a generator yields tuples of these columns when its rows need no adjusting
+    columns = [*udf.output, "sys__input_id", "sys__partial", "sys__empty"]
+    as_tuples = warehouse.insert_columns(udf_table) == columns and all(
+        default is None for *_, default in udf_col_types
+    )
+
     def _insert_rows():
         for udf_output in udf_results:
             if not udf_output:
@@ -584,6 +590,11 @@ def process_udf_outputs(
             with safe_closing(udf_output):
                 for row in udf_output:
                     cb.relative_update()
+                    if type(row) is tuple:
+                        if as_tuples:
+                            yield row
+                            continue
+                        row = dict(zip(columns, row, strict=True))
                     yield adjust_outputs(
                         warehouse,
                         row,

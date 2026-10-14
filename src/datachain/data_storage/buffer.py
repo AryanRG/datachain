@@ -42,15 +42,15 @@ class InsertBuffer(Generic[T]):
         self.execute_callback = execute_callback
         self.buffer_size = buffer_size
         self.flush_interval = flush_interval
-        self.buffer: list[dict[str, Any]] = []
+        self.buffer: list[dict[str, Any] | tuple] = []
         self.cursor = cursor
         self._last_flush_time: float = time.monotonic()
 
-    def insert(self, entry: dict[str, Any]) -> None:
+    def insert(self, entry: dict[str, Any] | tuple) -> None:
         self.buffer.append(entry)
         self._process_blocks()
 
-    def insert_many(self, entries: Iterable[dict[str, Any]]) -> None:
+    def insert_many(self, entries: Iterable[dict[str, Any] | tuple]) -> None:
         """Add many entries to the insert buffer (lazy iteration)."""
         for entry in entries:
             self.buffer.append(entry)
@@ -64,7 +64,9 @@ class InsertBuffer(Generic[T]):
         elapsed = time.monotonic() - self._last_flush_time
         return elapsed >= self.flush_interval
 
-    def _do_flush(self, entries: list[dict[str, Any]], final: bool = False) -> None:
+    def _do_flush(
+        self, entries: list[dict[str, Any] | tuple], final: bool = False
+    ) -> None:
         if not entries:
             return
         self.execute_callback(self.table, entries, final=final, cursor=self.cursor)

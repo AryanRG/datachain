@@ -90,7 +90,7 @@ def list_bucket(uri: str, cache, client_config=None) -> Callable:
     from bucket where each File represents one bucket entry.
     """
 
-    def list_func() -> Iterator[File]:  # also flat File rows from child processes
+    def list_func() -> Iterator[File]:  # also row_type(File) rows
         config = client_config or {}
         client = Client.get_client(uri, cache, **config)  # type: ignore[arg-type]
         _, path = Client.parse_url(uri)

@@ -9,7 +9,8 @@ import datachain as dc
 from datachain.asyn import get_loop
 from datachain.client import Client
 from datachain.client.listing_worker import Child, Pool, item_path
-from datachain.lib.convert.flatten import flatten
+from datachain.lib.convert.flatten import flatten, row_type
+from datachain.lib.file import File
 from datachain.lib.listing import list_bucket
 
 TREE = {
@@ -54,6 +55,21 @@ def children(client, mocker):
     return started
 
 
+@pytest.fixture
+def remote_rows(mocker):
+    """Rows the listing got from its child processes."""
+    got: list = []
+    pages = Pool.pages
+
+    async def recorded(self, prefix, lo, bound):
+        async for page in pages(self, prefix, lo, bound):
+            got.extend(page[0])
+            yield page
+
+    mocker.patch.object(Pool, "pages", recorded)
+    return got
+
+
 def starting(pools):
     pool = pools[-1] if pools else None
     return pool and not pool.ready() and any(not t.done() for t in pool.tasks)
@@ -72,20 +88,16 @@ def listing(client, prefix="", processes=True):
 
 
 def rows(items):
-    return sorted(i if isinstance(i, tuple) else flatten(i) for i in items)
-
-
-def from_children(items):
-    return [i for i in items if isinstance(i, tuple)]
+    return sorted(tuple(i) if isinstance(i, tuple) else flatten(i) for i in items)
 
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 @pytest.mark.parametrize("tree", [TREE], indirect=True)
 @pytest.mark.parametrize("prefix", ["", "big", "flat"])
-def test_listing_in_children_is_exact(client, tree, prefix, children):
+def test_listing_in_children_is_exact(client, tree, prefix, children, remote_rows):
     items = sync(get_loop(), _items, client, prefix, True)
 
-    assert from_children(items)
+    assert remote_rows
     assert rows(items) == listing(client, prefix, processes=False)
 
 
@@ -93,13 +105,13 @@ def test_listing_in_children_is_exact(client, tree, prefix, children):
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
 @pytest.mark.parametrize("tree", [TREE], indirect=True)
-def test_versions_across_pages_are_exact(client, tree, children):
+def test_versions_across_pages_are_exact(client, tree, children, remote_rows):
     for i in range(9):
         client.fs.pipe_file(f"{client.uri}/big/030", str(i).encode())
 
     items = sync(get_loop(), _items, client, "", True)
 
-    assert from_children(items)
+    assert remote_rows
     assert rows(items) == listing(client, processes=False)
     assert sum(item_path(i) == "big/030" for i in items) == 10
 
@@ -127,7 +139,9 @@ def test_ranges_of_a_dead_child_move_on(client, tree, processes, children, mocke
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 @pytest.mark.parametrize("tree", [TREE], indirect=True)
-def test_children_stop_when_listing_is_closed_early(client, tree, children, mocker):
+def test_children_stop_when_listing_is_closed_early(
+    client, tree, children, remote_rows, mocker
+):
     spawned = []
     child_start = Child.start
 
@@ -139,8 +153,8 @@ def test_children_stop_when_listing_is_closed_early(client, tree, children, mock
 
     async def first_child_page():
         async with aclosing(client.scandir("", processes=True)) as pages:
-            async for page in pages:
-                if from_children(page):
+            async for _ in pages:
+                if remote_rows:
                     return
 
     sync(get_loop(), first_child_page)
@@ -155,13 +169,13 @@ def test_children_stop_when_listing_is_closed_early(client, tree, children, mock
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 @pytest.mark.parametrize("tree", [TREE], indirect=True)
-def test_config_that_does_not_pickle_lists_in_process(client, tree):
+def test_config_that_does_not_pickle_lists_in_process(client, tree, remote_rows):
     client.fs_kwargs = {**client.fs_kwargs, "hook": lambda: None}
 
     assert Pool(client, 2).size == 0
     items = sync(get_loop(), _items, client, "", True)
     assert items
-    assert not from_children(items)
+    assert not remote_rows
 
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
@@ -176,3 +190,13 @@ def test_read_storage_rows_from_children(client, tree, children):
 
     assert children
     assert sorted(flatten(f) for f in files) == listing(client, processes=False)
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("tree", [TREE], indirect=True)
+def test_listing_rows_are_normalized_files(client, tree):
+    rows = sync(get_loop(), _items, client, "", False)
+
+    assert rows
+    assert all(type(r) is row_type(File) for r in rows)
+    assert [flatten(File(**r._asdict())) for r in rows] == [tuple(r) for r in rows]

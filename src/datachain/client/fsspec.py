@@ -54,8 +54,8 @@ DATA_SOURCE_URI_PATTERN = re.compile(r"^[\w]+:\/\/.*$")
 FRACTION = re.compile(r"(?<=\.)\d+")
 CLOUD_STORAGE_PROTOCOLS = {"s3", "gs", "az", "hf"}
 
-ResultQueue = asyncio.Queue[Sequence[Any]]  # File objects or flat File rows
-Page = tuple[list["File"], str | None]  # files and the last key listed
+ResultQueue = asyncio.Queue[Sequence[Any]]  # File objects or row_type(File) rows
+Page = tuple[list[Any], str | None]  # File rows and the last key listed
 
 
 def is_cloud_uri(uri: str) -> bool:
@@ -344,8 +344,9 @@ class Client(ABC):
     async def scandir(
         self, start_prefix: str, method: str = "default", processes: bool = False
     ) -> AsyncIterator[Sequence[Any]]:
-        """Pages of ``File`` objects; with ``processes``, a range listing may parse
-        pages in child processes, which send flat ``File`` rows instead."""
+        """Pages of ``File`` objects, or of ``row_type(File)`` rows from a range
+        listing; with ``processes``, a range listing may parse pages in child
+        processes."""
         try:
             impl = getattr(self, f"_fetch_{method}")
         except AttributeError:

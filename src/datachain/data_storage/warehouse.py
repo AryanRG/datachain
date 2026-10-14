@@ -515,10 +515,15 @@ class AbstractWarehouse(ABC, Serializable):
     def prepare_entries(self, entries: "Iterable[File]") -> Iterable[dict[str, Any]]:
         """Convert File entries so they can be passed on to `insert_rows()`"""
 
+    def insert_columns(self, table: sa.Table) -> list[str] | None:
+        """Columns of the tuples `insert_rows()` takes for `table` in order,
+        None if it takes only dicts."""
+        return None
+
     def insert_rows(
         self,
         table: sa.Table,
-        rows: Iterable[dict[str, Any]],
+        rows: Iterable[dict[str, Any] | tuple],
         batch_size: int | None = None,
     ) -> None:
         """Does batch inserts of any kind of rows into table.

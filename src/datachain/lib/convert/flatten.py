@@ -1,4 +1,5 @@
 import functools
+from collections import namedtuple
 from collections.abc import Generator, Iterator
 from typing import Any, NamedTuple
 
@@ -6,6 +7,8 @@ from pydantic import BaseModel
 
 from datachain.lib.data_model import unwrap_optional
 from datachain.lib.model_store import ModelStore
+
+SENTINEL = "_type_tag"  # the column of an Optional[DataModel] node
 
 
 class FieldKind(NamedTuple):
@@ -60,6 +63,50 @@ def iter_flat_columns(
             yield from iter_flat_columns(kind.inner, path)
         else:
             yield FlatColumn(path, False)
+
+
+@functools.cache
+def row_type(model: type[BaseModel]) -> type[Any]:
+    """A ``NamedTuple`` of ``model``'s flat columns in DB order.
+
+    A UDF that declares ``model`` as its output may yield these rows instead of
+    ``model`` objects: they skip validation and flattening, and readers still get
+    ``model`` objects back. Nested fields are named ``parent__child``.
+    """
+    names: list[str] = []
+    defaults: list[Any] = []
+    for name, kind in _field_kinds(model):
+        if kind.is_model:
+            cols = [] if not kind.is_optional else [f"{name}__{SENTINEL}"]
+            cols += [f"{name}__{c}" for c in row_type(kind.inner)._fields]
+        else:
+            cols = [name]
+        names += cols
+        field = model.model_fields[name]
+        if field.is_required():
+            defaults.clear()
+        else:
+            default = field.get_default(call_default_factory=True)
+            defaults += flatten_value(default, field.annotation)
+    base = namedtuple(f"{model.__name__}Row", names, defaults=defaults)  # type: ignore[misc]  # noqa: PYI024
+    return type(
+        base.__name__,
+        (base,),
+        {
+            "__slots__": (),
+            "__dc_model__": model,
+            "__reduce__": lambda row: (_rebuild_row, (model, tuple(row))),
+        },
+    )
+
+
+def _rebuild_row(model: type[BaseModel], values: tuple) -> tuple:
+    return row_type(model)(*values)
+
+
+def row_model(obj: Any) -> type[BaseModel] | None:
+    """The model of a ``row_type`` row, None for anything else."""
+    return getattr(type(obj), "__dc_model__", None)
 
 
 def flatten(obj: BaseModel) -> tuple:

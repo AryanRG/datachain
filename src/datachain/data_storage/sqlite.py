@@ -4,6 +4,7 @@ import sqlite3
 from collections.abc import Callable, Iterable, Sequence
 from contextlib import contextmanager
 from functools import cached_property, wraps
+from itertools import groupby
 from time import sleep
 from typing import TYPE_CHECKING, Any, ClassVar, Union
 from uuid import uuid4
@@ -262,7 +263,8 @@ class SQLiteDatabaseEngine(DatabaseEngine):
 
     @retry_sqlite_locks
     def executemany(self, query, params) -> None:
-        self.db.executemany(self.compile(query).string, params)
+        sql = query if isinstance(query, str) else self.compile(query).string
+        self.db.executemany(sql, params)
 
     @retry_sqlite_locks
     def execute_str(self, sql: str, parameters=None) -> sqlite3.Cursor:
@@ -797,10 +799,22 @@ class SQLiteWarehouse(AbstractWarehouse):
     def prepare_entries(self, entries: "Iterable[File]") -> Iterable[dict[str, Any]]:
         return (e.model_dump() for e in entries)
 
+    def insert_columns(self, table: Table) -> list[str]:
+        sys_names = {c.name for c in self.schema.dataset_row_cls.sys_columns()}
+        return [c.name for c in table.columns if c.name not in sys_names]
+
+    def _insert_tuples_sql(self, table: Table) -> str:
+        quote = self.db.dialect.identifier_preparer.quote
+        columns = self.insert_columns(table)
+        return (
+            f"INSERT INTO {quote(table.name)} ({', '.join(map(quote, columns))}) "  # noqa: S608
+            f"VALUES ({', '.join('?' * len(columns))})"
+        )
+
     def _insert_from_buffer(
         self,
         table: Table,
-        entries: list[dict[str, Any]],
+        entries: list[dict[str, Any] | tuple],
         final: bool = False,
         cursor: Any = None,
     ) -> None:
@@ -810,10 +824,15 @@ class SQLiteWarehouse(AbstractWarehouse):
         with self.db.transaction():
             # transactions speeds up inserts significantly as there is no separate
             # transaction created for each insert row
-            self.db.executemany(
-                table.insert().values({f: bindparam(f) for f in entries[0]}),
-                entries,
-            )
+            for kind, group in groupby(entries, type):
+                rows = list(group)
+                if kind is tuple:
+                    self.db.executemany(self._insert_tuples_sql(table), rows)
+                else:
+                    self.db.executemany(
+                        table.insert().values({f: bindparam(f) for f in rows[0]}),
+                        rows,
+                    )
 
     def get_buffer(
         self,
