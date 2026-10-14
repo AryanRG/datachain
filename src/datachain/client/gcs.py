@@ -221,7 +221,11 @@ class GCSClient(Client):
     _fetch_default = Client._fetch_ranges
 
     async def _pages_after(
-        self, prefix: str, start_after: str, keep: Callable[[str], bool]
+        self,
+        prefix: str,
+        start_after: str,
+        keep: Callable[[str], bool],
+        page_size: int | None = None,
     ) -> AsyncGenerator[Page, None]:
         token = None
         while True:
@@ -232,7 +236,7 @@ class GCSClient(Client):
                 delimiter="",
                 prefix=prefix,
                 startOffset=start_after or None,
-                maxResults=self.LIST_PAGE_SIZE,
+                maxResults=page_size or self.LIST_PAGE_SIZE,
                 pageToken=token,
                 json_out=True,
                 versions="true" if self._is_version_aware() else "false",
