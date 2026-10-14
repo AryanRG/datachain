@@ -23,6 +23,23 @@ class FileClient(Client):
     PREFIX = "file://"
     protocol = "file"
 
+    @staticmethod
+    def format_etag(etag: str) -> str:
+        """Show the stored etag, plus mtime when it is ``st_mtime.hex()``.
+
+        Local listings store mtime as ``float.hex()``. Conversion is limited to
+        that canonical shape so non-canonical values stay intact.
+        """
+        rendered = str(etag)
+        try:
+            mtime = float.fromhex(rendered)
+            if mtime.hex() != rendered:
+                return rendered
+            iso = datetime.fromtimestamp(mtime, timezone.utc).isoformat()
+        except (ValueError, OverflowError, OSError):
+            return rendered
+        return f"{rendered} (mtime {iso})"
+
     def __init__(
         self,
         name: str,
