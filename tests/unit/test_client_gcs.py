@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fsspec.asyn import sync
@@ -217,3 +217,27 @@ def test_get_file_qmark_in_key_with_version():
     args, kwargs = client._fs._get_file.call_args
     assert args[0] == f"gs://foo/blob?file.txt#{_VER}"
     assert kwargs.get("generation") is None
+
+
+def _create_fs_calls(method, monkeypatch, **kwargs):
+    monkeypatch.delenv("DATACHAIN_GCP_CREDENTIALS", raising=False)
+    with patch.object(GCSClient, "FS_CLASS") as fs_cls:
+        fs_cls.return_value.credentials.method = method
+        GCSClient.create_fs(**kwargs)
+    return [c.kwargs.get("token") for c in fs_cls.call_args_list]
+
+
+def test_create_fs_without_credentials_uses_explicit_anon(monkeypatch):
+    assert _create_fs_calls("anon", monkeypatch) == [None, "anon"]
+
+
+def test_create_fs_with_ambient_credentials_keeps_them(monkeypatch):
+    assert _create_fs_calls("google_default", monkeypatch) == [None]
+
+
+@pytest.mark.parametrize(
+    "kwargs,token",
+    [({"anon": True}, "anon"), ({"token": "/path/creds.json"}, "/path/creds.json")],
+)
+def test_create_fs_explicit_config_used_as_given(monkeypatch, kwargs, token):
+    assert _create_fs_calls("anon", monkeypatch, **kwargs) == [token]

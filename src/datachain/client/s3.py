@@ -22,7 +22,26 @@ class ClientS3(Client):
     PREFIX = "s3://"
     protocol = "s3"
     CREDENTIAL_KEYS = frozenset(
-        {"key", "secret", "token", "aws_key", "aws_secret", "aws_token"}
+        {
+            "key",
+            "secret",
+            "token",
+            "profile",
+            "aws_key",
+            "aws_secret",
+            "aws_token",
+            "aws_access_key_id",
+            "aws_secret_access_key",
+            "aws_session_token",
+        }
+    )
+    _KEY_ALIASES = (
+        ("aws_key", "key"),
+        ("aws_secret", "secret"),
+        ("aws_token", "token"),
+        ("aws_access_key_id", "key"),
+        ("aws_secret_access_key", "secret"),
+        ("aws_session_token", "token"),
     )
 
     @staticmethod
@@ -31,12 +50,9 @@ class ClientS3(Client):
             kwargs.setdefault("client_kwargs", {}).setdefault(
                 "endpoint_url", kwargs.pop("aws_endpoint_url")
             )
-        if "aws_key" in kwargs:
-            kwargs.setdefault("key", kwargs.pop("aws_key"))
-        if "aws_secret" in kwargs:
-            kwargs.setdefault("secret", kwargs.pop("aws_secret"))
-        if "aws_token" in kwargs:
-            kwargs.setdefault("token", kwargs.pop("aws_token"))
+        for alias, name in ClientS3._KEY_ALIASES:
+            if alias in kwargs:
+                kwargs.setdefault(name, kwargs.pop(alias))
         return kwargs
 
     @classmethod

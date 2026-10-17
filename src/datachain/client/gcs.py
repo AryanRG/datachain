@@ -41,7 +41,13 @@ class GCSClient(Client):
         if kwargs.pop("anon", False):
             kwargs["token"] = "anon"  # noqa: S105
 
-        return cast("GCSFileSystem", super().create_fs(**kwargs))
+        fs = cast("GCSFileSystem", super().create_fs(**kwargs))
+        if kwargs.get("token") is None and fs.credentials.method == "anon":
+            # No credentials found. An explicit "anon" also stops gcsfs's gRPC
+            # bucket-type lookup from searching for them again on every call.
+            kwargs["token"] = "anon"  # noqa: S105
+            fs = cast("GCSFileSystem", super().create_fs(**kwargs))
+        return fs
 
     @classmethod
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:  # noqa: PLR0911

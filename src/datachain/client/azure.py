@@ -1,3 +1,6 @@
+import functools
+import logging
+import os
 import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -27,6 +30,29 @@ if TYPE_CHECKING:
 _SPOOL_MAX_SIZE = 128 * 1024 * 1024
 # Copy chunk size when spooling a source stream, matching the fsspec upload path.
 _COPY_BUFFER_SIZE = 8 * 1024 * 1024
+# Environment variables adlfs reads credentials from.
+_ENV_CREDENTIALS = (
+    "AZURE_STORAGE_ACCOUNT_KEY",
+    "AZURE_STORAGE_CONNECTION_STRING",
+    "AZURE_STORAGE_SAS_TOKEN",
+    "AZURE_STORAGE_CLIENT_ID",
+)
+
+
+@functools.cache
+def _default_credential_available() -> bool:
+    from azure.identity import DefaultAzureCredential
+
+    identity_logger = logging.getLogger("azure.identity")
+    level = identity_logger.level
+    identity_logger.setLevel(logging.ERROR)
+    try:
+        DefaultAzureCredential().get_token("https://storage.azure.com/.default")
+    except ClientAuthenticationError:
+        return False
+    finally:
+        identity_logger.setLevel(level)
+    return True
 
 
 class _AzureWriteBuffer(SpooledTemporaryFile):
@@ -56,6 +82,19 @@ class AzureClient(Client):
             "tenant_id",
         }
     )
+
+    @classmethod
+    def create_fs(cls, **kwargs) -> AzureBlobFileSystem:
+        if (
+            "anon" not in kwargs
+            and "AZURE_STORAGE_ANON" not in os.environ
+            and not cls.has_explicit_credentials(kwargs)
+            and not any(os.environ.get(var) for var in _ENV_CREDENTIALS)
+            and not _default_credential_available()
+        ):
+            # adlfs would fail on every request without credentials.
+            kwargs["anon"] = True
+        return super().create_fs(**kwargs)
 
     @classmethod
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:

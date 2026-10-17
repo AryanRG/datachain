@@ -8,6 +8,7 @@ from fsspec.asyn import sync
 from fsspec.callbacks import DEFAULT_CALLBACK
 
 from datachain.asyn import get_loop
+from datachain.client import azure as azure_module
 from datachain.client.azure import AzureClient
 from datachain.lib.file import File
 
@@ -287,3 +288,46 @@ def test_listing_asks_for_versions_only_when_version_aware(version_aware, includ
     sync(get_loop(), list_all)
 
     assert container.list_blobs.call_args.kwargs["include"] == include
+
+
+@pytest.fixture
+def azure_fs_cls(monkeypatch):
+    for var in (*azure_module._ENV_CREDENTIALS, "AZURE_STORAGE_ANON"):
+        monkeypatch.delenv(var, raising=False)
+    with patch.object(AzureClient, "FS_CLASS") as fs_cls:
+        yield fs_cls
+
+
+@pytest.mark.parametrize("available", [True, False])
+def test_create_fs_anon_when_no_default_credential(azure_fs_cls, available):
+    with patch.object(
+        azure_module, "_default_credential_available", return_value=available
+    ):
+        AzureClient.create_fs(account_name="acc")
+    assert azure_fs_cls.call_args.kwargs.get("anon") is (None if available else True)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"anon": False},
+        {"account_key": "k"},
+        {"sas_token": "s"},
+        {"connection_string": "c"},
+        {"credential": "c"},
+    ],
+)
+def test_create_fs_explicit_config_skips_credential_check(azure_fs_cls, kwargs):
+    with patch.object(azure_module, "_default_credential_available") as check:
+        AzureClient.create_fs(account_name="acc", **kwargs)
+    check.assert_not_called()
+    assert azure_fs_cls.call_args.kwargs.get("anon") == kwargs.get("anon")
+
+
+@pytest.mark.parametrize("var", [*azure_module._ENV_CREDENTIALS, "AZURE_STORAGE_ANON"])
+def test_create_fs_env_config_skips_credential_check(azure_fs_cls, monkeypatch, var):
+    monkeypatch.setenv(var, "x")
+    with patch.object(azure_module, "_default_credential_available") as check:
+        AzureClient.create_fs(account_name="acc")
+    check.assert_not_called()
+    assert "anon" not in azure_fs_cls.call_args.kwargs
