@@ -88,8 +88,9 @@ class ClientS3(Client):
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:
         # Step 1: Anonymous probe. cache_regions=True handles PermanentRedirect
         # (bucket-in-wrong-region) transparently so the bucket is found → exists=True.
-        # Preserve endpoint/region settings from caller kwargs; strip credentials.
-        strip = cls.CREDENTIAL_KEYS | {"anon"}
+        # Preserve endpoint/region settings from caller kwargs (including the
+        # profile's); strip credentials.
+        strip = (cls.CREDENTIAL_KEYS - {"profile"}) | {"anon"}
         anon_kwargs = cls._normalize_s3_kwargs(
             {k: v for k, v in kwargs.items() if k not in strip}
         )

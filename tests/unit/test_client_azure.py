@@ -4,11 +4,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from adlfs import AzureBlobFileSystem
+from azure.core.exceptions import ClientAuthenticationError
 from fsspec.asyn import sync
 from fsspec.callbacks import DEFAULT_CALLBACK
 
 from datachain.asyn import get_loop
-from datachain.client import azure as azure_module
 from datachain.client.azure import AzureClient
 from datachain.lib.file import File
 
@@ -290,44 +290,53 @@ def test_listing_asks_for_versions_only_when_version_aware(version_aware, includ
     assert container.list_blobs.call_args.kwargs["include"] == include
 
 
+def _no_token(*args, **kwargs):
+    raise ClientAuthenticationError("no credential")
+
+
 @pytest.fixture
-def azure_fs_cls(monkeypatch):
-    for var in (*azure_module._ENV_CREDENTIALS, "AZURE_STORAGE_ANON"):
-        monkeypatch.delenv(var, raising=False)
-    with patch.object(AzureClient, "FS_CLASS") as fs_cls:
-        yield fs_cls
+def no_azure_env(monkeypatch):
+    for var in list(os.environ):
+        if var.startswith("AZURE_"):
+            monkeypatch.delenv(var)
 
 
-@pytest.mark.parametrize("available", [True, False])
-def test_create_fs_anon_when_no_default_credential(azure_fs_cls, available):
-    with patch.object(
-        azure_module, "_default_credential_available", return_value=available
-    ):
-        AzureClient.create_fs(account_name="acc")
-    assert azure_fs_cls.call_args.kwargs.get("anon") is (None if available else True)
+@pytest.mark.parametrize("has_token", [True, False])
+def test_create_fs_anon_when_no_default_credential(no_azure_env, has_token):
+    get_token = MagicMock(side_effect=None if has_token else _no_token)
+    with patch("azure.identity.DefaultAzureCredential.get_token", get_token):
+        fs = AzureClient.create_fs(account_name=f"acc{has_token}")
+        AzureClient.create_fs(account_name=f"acc{has_token}")
+    assert fs.anon is not has_token
+    get_token.assert_called_once()
 
 
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"anon": False},
+        {"anon": False, "credential": "c"},
         {"account_key": "k"},
         {"sas_token": "s"},
-        {"connection_string": "c"},
-        {"credential": "c"},
+        {
+            "connection_string": "DefaultEndpointsProtocol=https;AccountName=acc;"
+            "AccountKey=a2V5;EndpointSuffix=core.windows.net"
+        },
     ],
 )
-def test_create_fs_explicit_config_skips_credential_check(azure_fs_cls, kwargs):
-    with patch.object(azure_module, "_default_credential_available") as check:
-        AzureClient.create_fs(account_name="acc", **kwargs)
-    check.assert_not_called()
-    assert azure_fs_cls.call_args.kwargs.get("anon") == kwargs.get("anon")
+def test_create_fs_explicit_config_skips_credential_check(no_azure_env, kwargs):
+    with patch("azure.identity.DefaultAzureCredential.get_token") as get_token:
+        fs = AzureClient.create_fs(account_name="acc", **kwargs)
+    get_token.assert_not_called()
+    assert not fs.anon
 
 
-@pytest.mark.parametrize("var", [*azure_module._ENV_CREDENTIALS, "AZURE_STORAGE_ANON"])
-def test_create_fs_env_config_skips_credential_check(azure_fs_cls, monkeypatch, var):
-    monkeypatch.setenv(var, "x")
-    with patch.object(azure_module, "_default_credential_available") as check:
+@pytest.mark.parametrize(
+    "var,value", [("AZURE_STORAGE_ACCOUNT_KEY", "a2V5"), ("AZURE_STORAGE_ANON", "1")]
+)
+def test_create_fs_env_config_skips_credential_check(
+    no_azure_env, monkeypatch, var, value
+):
+    monkeypatch.setenv(var, value)
+    with patch("azure.identity.DefaultAzureCredential.get_token") as get_token:
         AzureClient.create_fs(account_name="acc")
-    check.assert_not_called()
-    assert "anon" not in azure_fs_cls.call_args.kwargs
+    get_token.assert_not_called()

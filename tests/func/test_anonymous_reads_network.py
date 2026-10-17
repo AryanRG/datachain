@@ -23,6 +23,17 @@ for f in dc.read_dataset("ep").limit(4).to_values("file"):
 """
 
 
+def _anon_env(tmp_path, drop_prefix):
+    # Hide local credentials (env vars, gcloud ADC, `az login`) so reads are anonymous.
+    env = {k: v for k, v in os.environ.items() if not k.startswith(drop_prefix)}
+    env |= {
+        "DATACHAIN_ROOT_DIR": str(tmp_path),
+        "CLOUDSDK_CONFIG": str(tmp_path / "gcloud"),
+        "AZURE_CONFIG_DIR": str(tmp_path / "azure"),
+    }
+    return env
+
+
 def _run(code, env):
     return subprocess.run(  # noqa: S603
         [sys.executable, "-c", code],
@@ -35,10 +46,7 @@ def _run(code, env):
 
 
 def test_public_bucket_reads_fast_in_new_session(tmp_path):
-    env = {
-        k: v for k, v in os.environ.items() if k != "GCSFS_EXPERIMENTAL_ZB_HNS_SUPPORT"
-    }
-    env["DATACHAIN_ROOT_DIR"] = str(tmp_path)
+    env = _anon_env(tmp_path, ("GCSFS_", "GOOGLE_", "DATACHAIN_GCP_"))
     _run(SAVE, env)
     timings = [float(t) for t in _run(READ, env).split()]
 
@@ -57,8 +65,7 @@ for path in ["t10k-labels-idx1-ubyte.gz", "train-labels-idx1-ubyte.gz"]:
 
 
 def test_azure_public_container_reads_without_credentials(tmp_path):
-    env = {k: v for k, v in os.environ.items() if not k.startswith("AZURE_")}
-    env["DATACHAIN_ROOT_DIR"] = str(tmp_path)
+    env = _anon_env(tmp_path, "AZURE_")
     timings = [float(t) for t in _run(AZURE_READ, env).split()]
 
     assert len(timings) == 2
