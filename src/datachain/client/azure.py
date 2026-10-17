@@ -30,7 +30,6 @@ if TYPE_CHECKING:
 _SPOOL_MAX_SIZE = 128 * 1024 * 1024
 # Copy chunk size when spooling a source stream, matching the fsspec upload path.
 _COPY_BUFFER_SIZE = 8 * 1024 * 1024
-# Environment variables adlfs reads credentials from.
 _ENV_CREDENTIALS = (
     "AZURE_STORAGE_ACCOUNT_KEY",
     "AZURE_STORAGE_CONNECTION_STRING",
@@ -92,7 +91,6 @@ class AzureClient(Client):
             and not any(os.environ.get(var) for var in _ENV_CREDENTIALS)
             and not _default_credential_available()
         ):
-            # adlfs would fail on every request without credentials.
             kwargs["anon"] = True
         return super().create_fs(**kwargs)
 
