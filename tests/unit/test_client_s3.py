@@ -1,6 +1,7 @@
 import inspect
 import pickle
 import threading
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import AsyncMock, MagicMock
 
@@ -222,6 +223,40 @@ def test_listing_pays_as_requester_when_asked(versions, requester_pays):
 
     sent = s3.list_objects_v2.call_args.kwargs
     assert sent.get("RequestPayer") == ("requester" if requester_pays else None)
+
+
+def _not_implemented(*_args, **_kwargs):
+    error = {"Error": {"Code": "NotImplemented"}, "ResponseMetadata": {}}
+    raise ClientError(error, "ListObjectVersions")
+
+
+def test_listing_without_versions_lists_current_objects():
+    modified = datetime(2026, 10, 1, tzinfo=UTC)
+    page = {
+        "Contents": [{"Key": "a", "Size": 1, "ETag": '"e"', "LastModified": modified}],
+        "IsTruncated": True,
+        "NextContinuationToken": "t",
+    }
+    s3 = MagicMock()
+    s3.list_object_versions = AsyncMock(side_effect=_not_implemented)
+    s3.list_objects_v2 = AsyncMock(return_value=page)
+    client = ClientS3("bucket", {}, None)
+    client._fs = MagicMock(
+        version_aware=True,
+        req_kw={},
+        set_session=AsyncMock(),
+        get_s3=AsyncMock(return_value=s3),
+    )
+
+    first = sync(get_loop(), client._list_page, "", "", None, lambda _: True)
+    child = ClientS3("bucket", {}, None)  # a listing process continues the token
+    child._fs = client._fs
+    sync(get_loop(), child._list_page, "", "", first.token, lambda _: True)
+
+    assert [(r.path, r.version) for r in first.rows] == [("a", "")]
+    assert first.token == "t"  # noqa: S105
+    assert s3.list_object_versions.call_count == 1
+    assert s3.list_objects_v2.call_args.kwargs["ContinuationToken"] == "t"
 
 
 def test_listing_fields_are_kept_once_per_shape_name():

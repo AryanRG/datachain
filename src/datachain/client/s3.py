@@ -7,7 +7,7 @@ from xml.etree.ElementTree import Element, ParseError, fromstring
 from aiobotocore.parsers import AioResponseParserFactory, AioRestXMLParser
 from aiobotocore.session import AioSession
 from botocore import handlers
-from botocore.exceptions import NoCredentialsError
+from botocore.exceptions import ClientError, NoCredentialsError
 from botocore.model import Shape
 from botocore.utils import parse_timestamp
 from fsspec.asyn import get_loop, sync, sync_wrapper
@@ -159,6 +159,7 @@ class ClientS3(RangeListedClient):
         {"key", "secret", "token", "aws_key", "aws_secret", "aws_token"}
     )
     PROBE_BOUNDED_SPLITS = False
+    _lists_versions = True
 
     @staticmethod
     def _normalize_s3_kwargs(kwargs: dict) -> dict:
@@ -301,7 +302,11 @@ class ClientS3(RangeListedClient):
         page_size: int | None = None,
         hi: str | None = None,
     ) -> Page:
-        versions = self._is_version_aware()
+        # a token continues the listing that made it: versions have key pairs
+        if token is not None:
+            versions = isinstance(token, tuple)
+        else:
+            versions = self._is_version_aware() and self._lists_versions
         kwargs: dict[str, Any] = {}
         if versions:
             if token is not None:
@@ -317,13 +322,22 @@ class ClientS3(RangeListedClient):
         await self.fs.set_session()
         s3 = await self.fs.get_s3(self.name)
         list_page = s3.list_object_versions if versions else s3.list_objects_v2
-        page = await list_page(
-            Bucket=self.name,
-            Prefix=prefix,
-            MaxKeys=page_size or self.LIST_PAGE_SIZE,
-            **kwargs,
-            **self.fs.req_kw,  # requester_pays
-        )
+        try:
+            page = await list_page(
+                Bucket=self.name,
+                Prefix=prefix,
+                MaxKeys=page_size or self.LIST_PAGE_SIZE,
+                **kwargs,
+                **self.fs.req_kw,  # requester_pays
+            )
+        except ClientError as e:
+            if (
+                not versions
+                or e.response.get("Error", {}).get("Code") != "NotImplemented"
+            ):
+                raise
+            self._lists_versions = False  # R2 keeps no versions: list current objects
+            return await self._list_page(prefix, start_after, None, keep, page_size, hi)
         entries = page.get("Versions" if versions else "Contents", [])
         keys = [d["Key"] for d in entries + page.get("DeleteMarkers", [])]
         if not page.get("IsTruncated"):
