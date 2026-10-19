@@ -2,6 +2,7 @@ import queue as queue_mod
 import threading
 from queue import Empty, Full
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from datachain.query.dispatch import (
     FINISHED_STATUS,
@@ -69,14 +70,6 @@ class ThreadProcess:
         return self.thread.is_alive()
 
 
-class FakeWarehouse:
-    def clone(self):
-        return self
-
-    def dataset_rows_select_from_ids(self, query, ids, is_batching):
-        return [[i] for i in ids]
-
-
 def test_dispatcher_runs_more_batches_than_its_buffer():
     dispatcher = UDFDispatcher.__new__(UDFDispatcher)
     dispatcher.ctx = SimpleNamespace(Queue=ThreadQueue, Process=ThreadProcess)
@@ -84,21 +77,23 @@ def test_dispatcher_runs_more_batches_than_its_buffer():
     dispatcher.buffer_size = 2
     dispatcher.input_batch_size = lambda n_workers: 3
     seen = []
+    catalog = MagicMock()
+    catalog.warehouse.clone().dataset_rows_select_from_ids = lambda _, ids, __: ids
 
     def run_worker() -> None:
         worker = UDFWorker(
-            SimpleNamespace(warehouse=FakeWarehouse()),
-            None,
+            catalog,
+            MagicMock(),
             dispatcher.task_queue,
             dispatcher.done_queue,
-            None,
-            None,
+            MagicMock(),
+            MagicMock(),
             cache=False,
             is_batching=False,
             batch_size=None,
             udf_fields=[],
         )
-        seen.extend(row[0] for row in worker.get_inputs())
+        seen.extend(worker.get_inputs())
         worker.stats.send(FINISHED_STATUS)
 
     dispatcher._run_worker = run_worker
