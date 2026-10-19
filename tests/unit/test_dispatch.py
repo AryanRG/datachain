@@ -95,6 +95,9 @@ class ThreadProcess:
     def is_alive(self) -> bool:
         return self.thread.is_alive()
 
+    def terminate(self) -> None:
+        self.thread.join()
+
 
 def test_dispatcher_runs_more_batches_than_its_buffer():
     dispatcher = UDFDispatcher.__new__(UDFDispatcher)
