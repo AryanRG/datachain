@@ -44,7 +44,7 @@ class GCSClient(Client):
 
         fs = cast("GCSFileSystem", super().create_fs(**kwargs))
         if getattr(fs, "credential", False) is None and fs.credentials.method == "anon":
-            # gcsfs leaves its gRPC clients without credentials
+            # gcsfs leaves its gRPC clients without credentials: fsspec/gcsfs#1109
             fs.credential = AnonymousCredentials()
         return fs
 

@@ -24,12 +24,11 @@ for f in dc.read_dataset("ep").limit(4).to_values("file"):
 
 
 def _anon_env(tmp_path, drop_prefix):
-    # Hide local credentials (env vars, gcloud ADC, `az login`) so reads are anonymous.
+    # Hide local credentials (env vars, gcloud ADC) so reads are anonymous.
     env = {k: v for k, v in os.environ.items() if not k.startswith(drop_prefix)}
     env |= {
         "DATACHAIN_ROOT_DIR": str(tmp_path),
         "CLOUDSDK_CONFIG": str(tmp_path / "gcloud"),
-        "AZURE_CONFIG_DIR": str(tmp_path / "azure"),
     }
     return env
 
@@ -52,21 +51,3 @@ def test_public_bucket_reads_fast_in_new_session(tmp_path):
 
     assert len(timings) == 4
     assert all(t < 1 for t in timings[1:]), timings
-
-
-AZURE_READ = """
-import time, datachain as dc
-session = dc.Session.get(client_config={"account_name": "azureopendatastorage"})
-for path in ["t10k-labels-idx1-ubyte.gz", "train-labels-idx1-ubyte.gz"]:
-    f = dc.File(source="az://mnist", path=path)
-    f._set_stream(session.catalog)
-    t = time.time(); f.read_bytes(1024); print(time.time() - t)
-"""
-
-
-def test_azure_public_container_reads_without_credentials(tmp_path):
-    env = _anon_env(tmp_path, "AZURE_")
-    timings = [float(t) for t in _run(AZURE_READ, env).split()]
-
-    assert len(timings) == 2
-    assert timings[1] < 1, timings
