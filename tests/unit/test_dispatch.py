@@ -6,9 +6,13 @@ from unittest.mock import MagicMock
 
 from datachain.query.dispatch import (
     FINISHED_STATUS,
+    STATS_INTERVAL_SEC,
     STOP_SIGNAL,
+    DownloadCallback,
+    ProcessedCallback,
     UDFDispatcher,
     UDFWorker,
+    WorkerStats,
     get_from_queue,
     put_into_queue,
 )
@@ -47,6 +51,28 @@ def test_put_into_queue():
 
     assert put_into_queue(mock_queue, STOP_SIGNAL) is None
     assert mock_queue.put_signal == STOP_SIGNAL
+
+
+def test_worker_sends_progress_once_per_interval(monkeypatch):
+    now = [0]
+    monkeypatch.setattr("datachain.query.dispatch.monotonic", lambda: now[0])
+    queue: queue_mod.Queue = queue_mod.Queue()
+    stats = WorkerStats(queue)
+    processed = ProcessedCallback("processed", stats)
+    download = DownloadCallback(stats)
+
+    for _ in range(300):
+        now[0] += 1
+        processed.relative_update(1)
+        download.increment_file_count(1)
+        download.relative_update(10)
+    stats.send(FINISHED_STATUS)
+
+    messages = list(queue.queue)
+    assert len(messages) == 300 // STATS_INTERVAL_SEC + 1
+    assert sum(m.get("processed", 0) for m in messages) == 300
+    assert sum(m.get("downloaded", 0) for m in messages) == 300
+    assert sum(m.get("bytes_downloaded", 0) for m in messages) == 3000
 
 
 class ThreadQueue(queue_mod.Queue):
