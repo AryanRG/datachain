@@ -89,6 +89,15 @@ class Client(ABC):
         self.uri = self.storage_uri(self.name)
 
     @staticmethod
+    def format_etag(etag: str) -> str:
+        """Render an etag (e.g. for error messages).
+
+        Default matches ``dc.show()`` / Studio (the stored string). Backends that
+        encode extra meaning in the etag (local mtime) override this.
+        """
+        return str(etag)
+
+    @staticmethod
     def get_implementation(url: str | os.PathLike[str]) -> type["Client"]:  # noqa: PLR0911
         from .azure import AzureClient
         from .gcs import GCSClient
@@ -439,7 +448,11 @@ class Client(ABC):
             shutil.copy2(src, dst)
 
     def open_object(
-        self, file: "File", use_cache: bool = True, cb: Callback = DEFAULT_CALLBACK
+        self,
+        file: "File",
+        use_cache: bool = True,
+        cb: Callback = DEFAULT_CALLBACK,
+        block_size: int | None = None,
     ) -> BinaryIO:
         """Open a file, including files in tar archives."""
         if use_cache and (cache_path := self.cache.get_path(file)):
@@ -448,7 +461,7 @@ class Client(ABC):
         kwargs = self._version_kwargs(file.version)
         full_path = file.get_fs_path()
         return FileWrapper(
-            self.fs.open(full_path, **kwargs),
+            self.fs.open(full_path, block_size=block_size, **kwargs),
             cb,
         )  # type: ignore[return-value]
 
@@ -578,7 +591,10 @@ class Client(ABC):
             etag = await self.get_current_etag(file)
             if file.etag != etag:
                 raise FileNotFoundError(
-                    f"Invalid etag for {file.source}/{file.path}: "
-                    f"expected {file.etag}, got {etag}"
+                    f"{file.source}/{file.path} changed on the source since the "
+                    f"catalog was created (etag was {self.format_etag(file.etag)}, now "
+                    f"{self.format_etag(etag)}). "
+                    "Re-run the original dc.read_storage(...) call with "
+                    "update=True to refresh the catalog."
                 )
         await self.cache.download(file, self, callback=callback)

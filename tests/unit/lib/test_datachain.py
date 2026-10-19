@@ -1,4 +1,4 @@
-import datetime
+import datetime as dt
 import enum
 import hashlib
 import io
@@ -774,7 +774,7 @@ def test_from_features_simple_types_in_memory():
 
 @skip_if_not_sqlite
 def test_to_pandas_as_object_preserves_none(test_session):
-    timestamp = datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc)
+    timestamp = dt.datetime(2020, 1, 1, tzinfo=dt.UTC)
     chain = dc.read_values(
         id=[1, None],
         value=[3.14, None],
@@ -810,9 +810,9 @@ def test_from_features_more_simple_types(test_session):
         nn=[None, None, None],
         ss=["x", None, "y"],
         time=[
-            datetime.datetime.now(),
-            datetime.datetime.today(),
-            datetime.datetime.today(),
+            dt.datetime.now(),
+            dt.datetime.today(),
+            dt.datetime.today(),
         ],
         f=[3.14, 2.72, 1.62],
         session=test_session,
@@ -841,7 +841,7 @@ def test_from_features_more_simple_types(test_session):
         list[int],  # from ll
         str,  # from nn (all None -> defaults to str)
         str | None,  # from ss (has a None -> inferred Optional)
-        datetime.datetime,
+        dt.datetime,
         float,
     }
 
@@ -2254,7 +2254,7 @@ def test_to_json_features_nested(tmp_dir, test_session):
 
 
 def test_to_json_datetime(tmp_dir, test_session):
-    timestamp = datetime.datetime.now(datetime.timezone.utc)
+    timestamp = dt.datetime.now(dt.UTC)
     chain = dc.read_values(ts=[timestamp], session=test_session)
 
     path = tmp_dir / "dt.json"
@@ -2265,10 +2265,7 @@ def test_to_json_datetime(tmp_dir, test_session):
 
     expected_ts = timestamp.isoformat().replace("+00:00", "Z")
     assert values == [{"ts": expected_ts}]
-    assert (
-        datetime.datetime.fromisoformat(values[0]["ts"].replace("Z", "+00:00"))
-        == timestamp
-    )
+    assert dt.datetime.fromisoformat(values[0]["ts"]) == timestamp
 
 
 # These deprecation warnings occur in the datamodel-code-generator package.
@@ -2352,6 +2349,23 @@ def test_read_parquet(tmp_dir, test_session):
     df1 = chain.select("first_name", "age", "city").to_pandas()
 
     assert df_equal(df1, df)
+
+
+@pytest.mark.parametrize("written_by_datachain", [False, True])
+@pytest.mark.parametrize(
+    "kwargs,signal",
+    [({}, "b"), ({"output": {"b": int}}, "b"), ({"column": "t"}, "t.b")],
+)
+def test_read_parquet_one_column_without_source(
+    tmp_dir, test_session, kwargs, signal, written_by_datachain
+):
+    path = tmp_dir / "one.parquet"
+    if written_by_datachain:
+        dc.read_values(b=[2], session=test_session).to_parquet(path)
+    else:
+        pq.write_table(pa.table({"b": [2]}), path)
+    chain = dc.read_parquet(path.as_uri(), source=False, session=test_session, **kwargs)
+    assert chain.to_values(signal) == [2]
 
 
 def test_read_parquet_exported_with_source(test_session, tmp_dir):
@@ -3972,7 +3986,7 @@ def test_schema_flatten(test_session):
         "file.version": str,
         "file.etag": str,
         "file.is_latest": bool,
-        "file.last_modified": datetime.datetime,
+        "file.last_modified": dt.datetime,
         "file.location": File.model_fields["location"].annotation,
         "nested.label": str,
         "nested.fr.nnn": str,
