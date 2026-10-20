@@ -8,6 +8,7 @@ import subprocess
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextvars import ContextVar
 from copy import copy
 from datetime import UTC, datetime
 from functools import wraps
@@ -22,9 +23,19 @@ from attrs import frozen
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback, TqdmCallback
 from sqlalchemy import Column
 from sqlalchemy.sql import func as f
-from sqlalchemy.sql.elements import ColumnClause, ColumnElement, Label
+from sqlalchemy.sql.elements import (
+    ColumnClause,
+    ColumnElement,
+    Label,
+    _textual_label_reference,
+)
 from sqlalchemy.sql.expression import label
-from sqlalchemy.sql.selectable import GenerativeSelect, Select, TableClause
+from sqlalchemy.sql.selectable import (
+    GenerativeSelect,
+    Select,
+    SelectBase,
+    TableClause,
+)
 from sqlalchemy.sql.visitors import replacement_traverse
 
 from datachain.catalog.catalog import clone_catalog_with_cache
@@ -133,6 +144,8 @@ class QueryGeneratorFunc(Protocol):
 class QueryGenerator:
     func: QueryGeneratorFunc
     columns: tuple[ColumnElement, ...]
+    # names in later clauses resolve to `columns`, since FROM is a join
+    bind_names: bool = False
 
     def only(self, column_names: Sequence[str]) -> Select:
         return self.func(*(c for c in self.columns if c.name in column_names))
@@ -156,11 +169,39 @@ def step_result(
     func: QueryGeneratorFunc,
     columns: Iterable[ColumnElement],
     dependencies: Iterable[DatasetDependencyType] = (),
+    bind_names: bool = False,
 ) -> "StepResult":
     return StepResult(
-        query_generator=QueryGenerator(func=func, columns=tuple(columns)),
+        query_generator=QueryGenerator(
+            func=func, columns=tuple(columns), bind_names=bind_names
+        ),
         dependencies=tuple(dependencies),
     )
+
+
+_bound_columns: ContextVar[dict[str, ColumnElement] | None] = ContextVar(
+    "_bound_columns", default=None
+)
+
+
+def _bind_names(col: Any, columns: dict[str, ColumnElement]) -> Any:
+    if isinstance(col, str):
+        return columns.get(col, col)
+
+    def replace(element, **_kwargs):
+        if isinstance(element, SelectBase):
+            return element
+        if (
+            isinstance(element, ColumnClause)
+            and element.table is None
+            and not element.is_literal
+        ):
+            return columns.get(element.name)
+        if isinstance(element, _textual_label_reference):
+            return columns.get(element.element)
+        return None
+
+    return replacement_traverse(col, {}, replace)
 
 
 class QueryState:
@@ -1879,6 +1920,7 @@ class RowGenerator(UDFStep):
 @frozen
 class SQLClause(Step, ABC):
     resets_query_state_after_apply: ClassVar[bool] = False
+    binds_names: ClassVar[bool] = False
 
     def apply(
         self,
@@ -1891,20 +1933,38 @@ class SQLClause(Step, ABC):
             query_generator = state.emit_boundary(query_generator)
 
         query = query_generator.select()
-        new_query = self.apply_sql_clause(query)
+        bound = None
+        if query_generator.bind_names and self.binds_names:
+            bound = {
+                name: c.element if isinstance(c, Label) else c
+                for name, c in query.selected_columns.items()
+            }
+        token = _bound_columns.set(bound)
+        try:
+            new_query = self.apply_sql_clause(query)
+        finally:
+            _bound_columns.reset(token)
         new_query = state.warehouse.normalize_limit_offset(new_query)
         self.update_query_state(state)
 
         def q(*columns):
             return new_query.with_only_columns(*columns)
 
-        return step_result(q, new_query.selected_columns)
+        keeps_columns = list(new_query.selected_columns) == list(query.selected_columns)
+        return step_result(
+            q,
+            new_query.selected_columns,
+            bind_names=query_generator.bind_names and keeps_columns,
+        )
 
     def parse_cols(
         self,
         cols: Sequence[Function | ColumnElement],
     ) -> tuple[ColumnElement, ...]:
-        return tuple(c.get_column() if isinstance(c, Function) else c for c in cols)
+        parsed = tuple(c.get_column() if isinstance(c, Function) else c for c in cols)
+        if (bound := _bound_columns.get()) is not None:
+            parsed = tuple(_bind_names(c, bound) for c in parsed)
+        return parsed
 
     @abstractmethod
     def apply_sql_clause(self, query: Any) -> Any:
@@ -2018,6 +2078,7 @@ class SQLMutate(SQLClause):
 @frozen
 class SQLFilter(SQLClause):
     expressions: tuple[Function | ColumnElement, ...]
+    binds_names: ClassVar[bool] = True
 
     def hash_inputs(self) -> str:
         return hash_column_elements(self.expressions)
@@ -2044,6 +2105,7 @@ class SQLFilter(SQLClause):
 @frozen
 class SQLOrderBy(SQLClause):
     args: tuple[Function | ColumnElement, ...]
+    binds_names: ClassVar[bool] = True
 
     def hash_inputs(self) -> str:
         return hash_column_elements(self.args)
@@ -2113,15 +2175,17 @@ class SQLCount(SQLClause):
 class SQLDistinct(SQLClause):
     args: tuple[ColumnElement, ...]
     dialect: str
+    binds_names: ClassVar[bool] = True
 
     def hash_inputs(self) -> str:
         return hash_column_elements(self.args)
 
     def apply_sql_clause(self, query):
+        args = self.parse_cols(self.args)
         if self.dialect == "sqlite":
-            return query.group_by(*self.args)
+            return query.group_by(*args)
 
-        return query.distinct(*self.args)
+        return query.distinct(*args)
 
     def requires_boundary(self, state: "QueryState") -> bool:
         # DISTINCT after GROUP BY / LIMIT / OFFSET should de-duplicate the
@@ -2438,23 +2502,21 @@ class SQLJoin(Step):
 
         join_expression = sqlalchemy.and_(*expressions)
 
-        # later steps must not see both sides' columns, e.g. `size`
-        joined = self.catalog.warehouse.join(
-            q1,
-            q2,
-            join_expression,
-            inner=self.inner,
-            full=self.full,
-            columns=res_columns,
-        ).subquery()
-
         def q(*columns):
-            return sqlalchemy.select(*columns).select_from(joined)
+            return self.catalog.warehouse.join(
+                q1,
+                q2,
+                join_expression,
+                inner=self.inner,
+                full=self.full,
+                columns=columns,
+            )
 
         return step_result(
             q,
-            joined.c,
+            res_columns,
             dependencies=self.query1.dependencies | self.query2.dependencies,
+            bind_names=True,
         )
 
 

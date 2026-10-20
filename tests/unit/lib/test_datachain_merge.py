@@ -2,6 +2,7 @@ import math
 
 import pandas as pd
 import pytest
+import sqlalchemy as sa
 from pydantic import BaseModel
 from sqlalchemy import func
 
@@ -648,3 +649,20 @@ def test_merge_nested_file_shared_column_name(test_session):
         ("b",),
         ("a",),
     ]
+
+
+def test_merge_filter_keeps_names_inside_subquery(test_session):
+    chain = dc.read_values(path=["a"], size=[1], session=test_session)
+    lookup = sa.select(sa.literal(100).label("size")).subquery()
+    value = sa.select(C("size")).select_from(lookup).scalar_subquery()
+    merged = chain.merge(chain, on="path")
+    assert merged.filter(value > 50).to_list("path") == [("a",)]
+
+
+def test_merge_filter_keeps_literal_column(test_session):
+    chain = dc.read_values(
+        path=["a"], CURRENT_TIMESTAMP=["bogus"], session=test_session
+    )
+    merged = chain.merge(chain, on="path")
+    now = sa.literal_column("CURRENT_TIMESTAMP")
+    assert merged.filter(now != "bogus").to_list("path") == [("a",)]
