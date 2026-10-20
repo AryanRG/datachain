@@ -1,8 +1,9 @@
 import asyncio
+import errno
 import os
 from typing import TYPE_CHECKING, Any, cast
 
-from botocore.exceptions import NoCredentialsError
+from botocore.exceptions import ClientError, NoCredentialsError
 from fsspec.asyn import get_loop, sync
 from s3fs import S3FileSystem
 
@@ -83,12 +84,16 @@ class ClientS3(Client):
         try:
             sync(get_loop(), anon_fs._info, name)
             return BucketStatus(exists=True, access="anonymous")
-        except PermissionError:
-            pass
         except FileNotFoundError:
             return BucketStatus(
                 exists=False, access="denied", error=f"S3 bucket '{name}' not found"
             )
+        except PermissionError:
+            pass
+        except OSError as e:
+            # s3fs maps R2's anonymous HTTP 400 response to EINVAL.
+            if e.errno != errno.EINVAL:
+                raise
 
         # Step 2: Authenticated probe.
         # Use raw S3FileSystem to bypass ClientS3.create_fs()'s auto-anon fallback.
@@ -153,9 +158,23 @@ class ClientS3(Client):
 
     async def _fetch_flat(self, start_prefix: str, result_queue: ResultQueue) -> None:
         async def get_pages(it, page_queue):
+            can_fallback = versions
             try:
                 async for page in it:
+                    can_fallback = False
                     await page_queue.put(page.get(contents_key, []))
+            except ClientError as e:
+                if (
+                    not can_fallback
+                    or e.response.get("Error", {}).get("Code") != "NotImplemented"
+                ):
+                    raise
+                # Stores without version support contain only current objects.
+                it = s3.get_paginator("list_objects_v2").paginate(
+                    Bucket=self.name, Prefix=prefix, Delimiter=""
+                )
+                async for page in it:
+                    await page_queue.put(page.get("Contents", []))
             finally:
                 await page_queue.put(None)
 
