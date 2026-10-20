@@ -2438,8 +2438,7 @@ class SQLJoin(Step):
 
         join_expression = sqlalchemy.and_(*expressions)
 
-        # Wrapped so later steps resolve names against the joined output only,
-        # not against both join sides (e.g. `size` exists in q1 and q2).
+        # later steps must not see both sides' columns, e.g. `size`
         joined = self.catalog.warehouse.join(
             q1,
             q2,
