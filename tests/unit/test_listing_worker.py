@@ -354,12 +354,14 @@ def test_a_stuck_child_takes_no_more_pages_and_fails_its_others_at_once(mocker, 
         pool.children = {proc: {}}
         first = asyncio.create_task(pool.list_page("", None, None))
         await asyncio.sleep(0.5)  # within the first page's grace
+        mocker.patch.object(listing_worker, "REPLY_TIMEOUT", 60)
         second = asyncio.create_task(pool.list_page("", None, None))
-        start = time.monotonic()
 
         assert await first is None
-        assert await second is None
-        assert time.monotonic() - start < 1  # not a timeout of its own
+        # back with the first page's drop, long before a timeout of its own
+        await asyncio.wait([second], timeout=30)
+        assert second.done()
+        assert second.result() is None
         assert not pool.children
         assert await pool.list_page("", None, None) is None
 
