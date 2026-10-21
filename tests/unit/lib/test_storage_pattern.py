@@ -207,3 +207,12 @@ def test_expand_brace_pattern_edge_cases():
 )
 def test_list_scope(list_path, pattern, recursive, scope):
     assert list_scope(list_path, pattern, recursive) == scope
+
+
+@pytest.mark.parametrize("slashes", ["//", "///"])
+def test_split_uri_pattern_preserves_empty_folder_segments(slashes):
+    uri = f"s3://bucket/d{slashes}*.txt"
+    assert split_uri_pattern(uri) == (f"s3://bucket/d{slashes}", "*.txt")
+    assert list_scope(f"d{slashes}", "*.txt", True) == ListScope(
+        f"d{slashes}", f"d{slashes}", True
+    )

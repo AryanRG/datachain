@@ -54,6 +54,8 @@ def split_uri_pattern(uri: str) -> tuple[str, str | None]:
             pattern = "/".join(path_segments[1:]) if len(path_segments) > 1 else "*"
         else:
             base = scheme_part + "/".join(path_segments[:pattern_start_idx])
+            if path_segments[pattern_start_idx - 1] == "":
+                base += "/"
             pattern = "/".join(path_segments[pattern_start_idx:])
 
         return base, pattern
@@ -266,7 +268,7 @@ def list_scope(
     that start with the pattern's literal head, one level only if the URI
     doesn't recurse. None when it is the whole listing.
     """
-    folder = list_path.lstrip("/").rstrip("/*")
+    folder = list_path.lstrip("/").removesuffix("*").removesuffix("/")
     folder = f"{folder}/" if folder else ""
     if pattern is None:
         return None if recursive else ListScope(folder, folder, True)
@@ -282,6 +284,6 @@ def list_scope(
 
 def _glob_pattern(pattern: str, list_path: str) -> str:
     glob_pattern = convert_globstar_to_glob(pattern)
-    if subpath := list_path.strip("/"):
+    if subpath := list_path.lstrip("/").removesuffix("/"):
         glob_pattern = f"{subpath}/{glob_pattern}"
     return glob_pattern

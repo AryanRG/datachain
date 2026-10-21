@@ -17,6 +17,7 @@ from datachain.lib.file import (
     AudioFile,
     File,
     FileError,
+    FileRow,
     ImageFile,
     TextFile,
     VFileError,
@@ -208,6 +209,15 @@ def test_export_rejects_empty_segments(create_file, tmp_path):
     output = tmp_path / "output"
     with pytest.raises(FileError, match="must not contain empty segments"):
         file.export(output, placement="filepath", use_cache=False)
+
+
+@pytest.mark.parametrize(
+    "path,parent",
+    [("x.txt", "."), ("a/b.txt", "a"), ("d//e.txt", "d/"), ("a/b//c/d.txt", "a/b//c")],
+)
+@pytest.mark.parametrize("file_type", [File, FileRow])
+def test_parent_keeps_empty_segments(path, parent, file_type):
+    assert file_type(source="s3://bkt", path=path).parent == parent
 
 
 def _uri_via_helper(p: Path) -> str:
@@ -471,6 +481,35 @@ def test_save_binary_data(tmp_path, catalog: Catalog):
     assert result.name == file2_name
     assert result.source == path_to_fsspec_uri(str(tmp_path))
     assert result.read() == data
+
+
+@pytest.mark.parametrize("prefix", ["", "file://"])
+def test_save_refuses_a_local_path_with_an_empty_segment(tmp_path, catalog, prefix):
+    (tmp_path / "src.bin").write_bytes(b"x")
+    file = File(path="src.bin", source=f"file://{tmp_path}")
+    file._set_stream(catalog, False)
+
+    with pytest.raises(ValueError, match="must not contain empty segments"):
+        file.save(f"{prefix}{tmp_path}/out/d//e.txt")  # the OS writes out/d/e.txt
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("prefix", ["", "file://"])
+def test_image_save_refuses_empty_segments_without_overwriting(
+    tmp_path, catalog, prefix
+):
+    from PIL import Image as PILImage
+
+    PILImage.new("RGB", (1, 1)).save(tmp_path / "src.png")
+    file = ImageFile(path="src.png", source=f"file://{tmp_path}")
+    file._set_stream(catalog, False)
+    dest = tmp_path / "out" / "d" / "e.png"
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"existing content")
+
+    with pytest.raises(ValueError, match="must not contain empty segments"):
+        file.save(f"{prefix}{tmp_path}/out/d//e.png")
+    assert dest.read_bytes() == b"existing content"
 
 
 def test_save_accepts_file_fsspec_uri_destination(tmp_path, catalog: Catalog):
