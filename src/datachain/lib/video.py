@@ -14,12 +14,14 @@ from numpy import ndarray
 from PIL import Image as PilImage
 
 from datachain.lib.file import (
+    PARTIAL_READ_BLOCK_SIZE,
     File,
     FileError,
     VFileRegistry,
     Video,
     VideoFile,
     VideoFrame,
+    sha256,
 )
 
 if TYPE_CHECKING:
@@ -123,7 +125,7 @@ def video_info(file: File | VideoFile, video_stream_index: int = 0) -> Video:
     _validate_video_stream_index(video_stream_index)
 
     try:
-        with file.open() as f:
+        with file.open(block_size=PARTIAL_READ_BLOCK_SIZE) as f:
             with av.open(f) as container:
                 video_stream = _video_stream(
                     container,
@@ -619,6 +621,11 @@ def save_video_fragment(
     Saves video interval as a new video file. If ``destination`` is a remote
     path, the video will be uploaded to remote storage.
 
+    The output is named ``{stem}_{hash}_{start_ms}_{end_ms}.{format}``, where
+    ``hash`` is derived from the source video's ``source`` and ``path``, so
+    videos with the same name in different directories don't overwrite each
+    other.
+
     Args:
         video: Video file object.
         start: Start time in seconds.
@@ -651,8 +658,10 @@ def save_video_fragment(
 
     start_ms = int(start * 1000)
     end_ms = int(end * 1000)
+    path_hash = sha256(f"{video.source}/{video.path}".encode()).hexdigest()[:16]
     output_file = posixpath.join(
-        destination, f"{video.get_file_stem()}_{start_ms:06d}_{end_ms:06d}.{format}"
+        destination,
+        f"{video.get_file_stem()}_{path_hash}_{start_ms:06d}_{end_ms:06d}.{format}",
     )
 
     client, rel_path = video._resolve_destination(output_file, client_config)

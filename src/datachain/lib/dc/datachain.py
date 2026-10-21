@@ -117,10 +117,11 @@ SIMILARITY_SCORE_COL_NAME = "sim_a4f74e9a"
 
 if TYPE_CHECKING:
     import sqlite3
+    from typing import Self
 
     import pandas as pd
     from sqlalchemy.orm import Session as OrmSession
-    from typing_extensions import ParamSpec, Self
+    from typing_extensions import ParamSpec
 
     from datachain.lib.settings import LLMParams
 
@@ -485,10 +486,9 @@ class DataChain:
         Parameters:
             cache: Enable files caching to speed up subsequent accesses to the same
                 files from the same or different chains. Defaults to False.
-            prefetch: Enable prefetching of files. This will download files in
-                advance in parallel. If an integer is provided, it specifies the number
-                of files to prefetch concurrently for each process on each worker.
-                Defaults to 2. Set to 0 or False to disable prefetching.
+            prefetch: Number of files to download in full ahead of the UDF, per
+                process on each worker. Defaults to 2. Set to 0 or False for UDFs
+                that read only part of a file, such as `get_info()`.
             parallel: Number of processes to use for processing user-defined functions
                 (UDFs) in parallel. If an integer is provided, it specifies the number
                 of CPUs to use. If True, all available CPUs are used. Defaults to 1.
@@ -770,6 +770,33 @@ class DataChain:
         except ProjectNotFoundError as e:
             raise ProjectCreateNotAllowedError("Creating project is not allowed") from e
 
+    def _record_checkpoint_reuse_access(
+        self, dataset: DatasetRecord, version: str
+    ) -> None:
+        """Record access to a reused dataset version and the dataset versions
+        it depends on.
+        """
+        catalog = self.session.catalog
+        metastore = catalog.metastore
+        metastore.record_dataset_version_access(dataset, version)
+
+        for dependency in catalog.get_dataset_dependencies(
+            dataset.name,
+            version,
+            namespace_name=dataset.project.namespace.name,
+            project_name=dataset.project.name,
+        ):
+            if dependency is None or dependency.removed:
+                continue
+            source_dataset = catalog.get_dataset(
+                dependency.name,
+                namespace_name=dependency.namespace,
+                project_name=dependency.project,
+                versions=[dependency.version],
+                include_incomplete=False,
+            )
+            metastore.record_dataset_version_access(source_dataset, dependency.version)
+
     def _resolve_checkpoint(
         self,
         name: str,
@@ -852,8 +879,16 @@ class DataChain:
                 **kwargs,
             )
 
+            # Reusing a completed save checkpoint skips QueryStep.apply(), so mark
+            # the reused output and its direct input versions as accessed here.
+            starting_step = chain._query.starting_step
+            if starting_step is not None:
+                self._record_checkpoint_reuse_access(
+                    starting_step.dataset,
+                    starting_step.dataset_version,
+                )
+
             # Link current job to this dataset version (not creator).
-            # This also updates dataset_version.job_id.
             metastore.link_dataset_version_to_job(
                 dataset_version.id,
                 self.job.id,
@@ -931,12 +966,19 @@ class DataChain:
             # would be the same as previous one. To avoid duplicating exact
             # datasets, we won't create new version of it and we will return
             # current latest version instead.
-            return read_dataset(
+            result = read_dataset(
                 name,
                 namespace=project.namespace.name,
                 project=project.name,
                 **kwargs,
             )
+            starting_step = result._query.starting_step
+            if starting_step is not None:
+                self.session.catalog.metastore.record_dataset_version_access(
+                    starting_step.dataset,
+                    starting_step.dataset_version,
+                )
+            return result
 
         # Case 3: first creation of dataset
         return None

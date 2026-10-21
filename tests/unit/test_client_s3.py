@@ -1,4 +1,8 @@
+import asyncio
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
+from botocore.exceptions import ClientError
 
 from datachain.client.s3 import ClientS3
 from datachain.client.writeconfig import WriteConfig
@@ -105,3 +109,34 @@ def test_node_bucket_full_split(nodes):
     assert len(bkt[1]) == 1
     assert len(bkt[2]) == 1
     assert len(bkt[3]) == 1
+
+
+@pytest.mark.parametrize(
+    "versions, pages, code",
+    [
+        (True, [], "AccessDenied"),
+        (True, [{"Versions": []}], "NotImplemented"),
+        (False, [], "NotImplemented"),
+    ],
+    ids=["other-error", "after-first-page", "non-versioned"],
+)
+@pytest.mark.asyncio
+async def test_fetch_flat_listing_errors(versions, pages, code):
+    async def paginate(**kwargs):
+        for page in pages:
+            yield page
+        raise ClientError({"Error": {"Code": code}}, "ListObjectVersions")
+
+    s3 = MagicMock()
+    s3.get_paginator.return_value.paginate = paginate
+    client = ClientS3("bucket", {}, None)
+    client._fs = MagicMock(
+        version_aware=versions,
+        set_session=AsyncMock(),
+        get_s3=AsyncMock(return_value=s3),
+    )
+    with pytest.raises(ClientError, match=code):
+        await client._fetch_flat("", asyncio.Queue())
+    s3.get_paginator.assert_called_once_with(
+        "list_object_versions" if versions else "list_objects_v2"
+    )

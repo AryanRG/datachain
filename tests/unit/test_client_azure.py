@@ -1,6 +1,6 @@
 import asyncio
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -29,7 +29,7 @@ _INFO = {
     "name": "az://mycontainer/blob.txt",
     "size": 42,
     "etag": '"abc123"',
-    "last_modified": datetime(2024, 1, 1, tzinfo=timezone.utc),
+    "last_modified": datetime(2024, 1, 1, tzinfo=UTC),
 }
 
 
@@ -315,7 +315,7 @@ _DETAILS_MOCK = [
         "size": 42,
         "type": "file",
         "etag": '"abc123"',
-        "last_modified": datetime(2024, 1, 1, tzinfo=timezone.utc),
+        "last_modified": datetime(2024, 1, 1, tzinfo=UTC),
     }
 ]
 
@@ -334,7 +334,7 @@ def _make_client_sdk(name="mycontainer"):
     blob_props.name = "blob.txt"
     blob_props.size = 42
     blob_props.etag = '"abc123"'
-    blob_props.last_modified = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    blob_props.last_modified = datetime(2024, 1, 1, tzinfo=UTC)
     blob_props.metadata = None
     bc.get_blob_properties = AsyncMock(return_value=blob_props)
     stream = AsyncMock()
@@ -492,7 +492,7 @@ def _listed_blob(name, metadata):
     blob.size = 0
     blob.metadata = metadata
     blob.etag = '"abc123"'
-    blob.last_modified = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    blob.last_modified = datetime(2024, 1, 1, tzinfo=UTC)
     return blob
 
 
@@ -529,3 +529,29 @@ def test_fetch_flat_skips_directory_markers(metadata):
     files = queue.get_nowait()
     assert [f.path for f in files] == ["dir/a.txt"]
     assert queue.get_nowait() is None
+
+
+@pytest.mark.parametrize(
+    "version_aware,include",
+    [(True, ["metadata", "versions"]), (False, ["metadata"])],
+)
+def test_listing_asks_for_versions_only_when_version_aware(version_aware, include):
+    async def no_pages():
+        return
+        yield
+
+    container = MagicMock()
+    container.__aenter__ = AsyncMock(return_value=container)
+    container.__aexit__ = AsyncMock(return_value=False)
+    container.list_blobs.return_value.by_page.return_value = no_pages()
+    client = AzureClient("mycontainer", {}, MagicMock())
+    client._fs = MagicMock(version_aware=version_aware)
+    client._fs.service_client.get_container_client.return_value = container
+
+    async def list_all():
+        async for _ in client.scandir(""):
+            pass
+
+    sync(get_loop(), list_all)
+
+    assert container.list_blobs.call_args.kwargs["include"] == include
