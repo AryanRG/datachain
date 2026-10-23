@@ -381,7 +381,8 @@ class AbstractMetastore(ABC, Serializable):
         Get dataset versions by job ID and/or version IDs.
 
         Returns dataset versions filtered by job_id and/or version_ids:
-        - If job_id is provided, returns versions for that job.
+        - If job_id is provided, returns versions created by that job, not
+          versions it merely reused.
         - If version_ids are provided, returns versions matching those IDs.
         - If both are provided, returns versions matching both filters.
         - If neither is provided, returns all dataset versions.
@@ -2095,13 +2096,26 @@ class AbstractDBMetastore(AbstractMetastore):
     def get_dataset_versions(
         self, job_id: str | None = None, version_ids: list[int] | None = None
     ) -> list[tuple[DatasetRecord, str]]:
+        """Get versions, optionally filtering by creator job and/or version ID."""
         select_cols, base_from = self._dataset_version_query_base()
         dv = self._datasets_versions
 
-        query = self._datasets_select(*select_cols).select_from(base_from)
+        from_clause = base_from
+        if job_id is not None:
+            dvj = self._dataset_version_jobs
+            from_clause = base_from.join(
+                dvj,
+                and_(
+                    dvj.c.dataset_version_id == dv.c.id,
+                    dvj.c.is_creator.is_(True),
+                ),
+                isouter=True,
+            )
+
+        query = self._datasets_select(*select_cols).select_from(from_clause)
 
         if job_id is not None:
-            query = query.where(dv.c.job_id == job_id)
+            query = query.where(f.coalesce(dvj.c.job_id, dv.c.job_id) == job_id)
 
         if version_ids is not None:
             query = query.where(dv.c.id.in_(version_ids))

@@ -383,10 +383,21 @@ def test_remove_keep_metadata_refused_when_status_not_removable(
         catalog.remove_dataset_version(dataset_failed, version, keep_metadata=True)
 
 
-def test_remove_dataset_versions_job_id_filter(test_session, job, dataset_created):
-    test_session.catalog.metastore.set_job_status(job.id, JobStatus.FAILED)
+def test_remove_dataset_versions_job_id_filter_uses_creator_link(
+    test_session, job, dataset_created
+):
+    metastore = test_session.catalog.metastore
+    metastore.set_job_status(job.id, JobStatus.FAILED)
     ds = test_session.catalog.get_dataset(dataset_created.name, versions=None)
     vid = ds.get_version(ds.latest_version).id
+    reuser_job_id = metastore.create_job("reuser", "")
+    metastore.link_dataset_version_to_job(vid, reuser_job_id)
+    # The creator link must win if the legacy column disagrees.
+    metastore.db.execute(
+        metastore._datasets_versions_update()
+        .where(metastore._datasets_versions.c.id == vid)
+        .values(job_id=reuser_job_id)
+    )
 
     assert (
         test_session.catalog.remove_dataset_versions(
@@ -395,6 +406,25 @@ def test_remove_dataset_versions_job_id_filter(test_session, job, dataset_create
         == 0
     )
     test_session.catalog.get_dataset(dataset_created.name)
+
+    assert (
+        test_session.catalog.remove_dataset_versions(
+            version_ids=[vid], job_id=reuser_job_id
+        )
+        == 0
+    )
+
+    # Old versions without M2M creator links remain filterable by job_id.
+    metastore.db.execute(
+        metastore._dataset_version_jobs_delete().where(
+            metastore._dataset_version_jobs.c.dataset_version_id == vid
+        )
+    )
+    metastore.db.execute(
+        metastore._datasets_versions_update()
+        .where(metastore._datasets_versions.c.id == vid)
+        .values(job_id=job.id)
+    )
 
     assert (
         test_session.catalog.remove_dataset_versions(version_ids=[vid], job_id=job.id)
