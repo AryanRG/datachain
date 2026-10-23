@@ -2182,10 +2182,41 @@ class AbstractDBMetastore(AbstractMetastore):
             job_id: ID of the failed job whose dataset versions should be marked
         """
         dv = self._datasets_versions
+        dvj = self._dataset_version_jobs
 
+        creator_link_exists = (
+            select(dvj.c.id)
+            .where(
+                dvj.c.dataset_version_id == dv.c.id,
+                dvj.c.is_creator.is_(True),
+            )
+            .exists()
+        )
+        creator_job_link_exists = (
+            select(dvj.c.id)
+            .where(
+                dvj.c.dataset_version_id == dv.c.id,
+                dvj.c.job_id == job_id,
+                dvj.c.is_creator.is_(True),
+            )
+            .exists()
+        )
+
+        # Fall back to the old column only for versions without a creator link.
         update_stmt = (
             dv.update()
-            .where((dv.c.job_id == job_id) & (dv.c.status == DatasetStatus.CREATED))
+            .where(
+                and_(
+                    dv.c.status == DatasetStatus.CREATED,
+                    or_(
+                        creator_job_link_exists,
+                        and_(
+                            ~creator_link_exists,
+                            dv.c.job_id == job_id,
+                        ),
+                    ),
+                )
+            )
             .values(
                 status=DatasetStatus.FAILED,
                 finished_at=datetime.now(UTC),

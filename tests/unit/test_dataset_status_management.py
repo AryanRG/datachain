@@ -99,6 +99,46 @@ def test_mark_job_dataset_versions_as_failed_skips_complete(
     assert dataset_version.status == DatasetStatus.COMPLETE
 
 
+def test_mark_job_dataset_versions_as_failed_uses_creator_link(
+    test_session, job, dataset_created
+):
+    metastore = test_session.catalog.metastore
+    dataset_version = dataset_created.get_version(dataset_created.latest_version)
+    reuser_job_id = metastore.create_job("reuser", "")
+    metastore.link_dataset_version_to_job(dataset_version.id, reuser_job_id)
+    metastore.db.execute(
+        metastore._datasets_versions_update()
+        .where(metastore._datasets_versions.c.id == dataset_version.id)
+        .values(job_id=reuser_job_id)
+    )
+
+    metastore.mark_job_dataset_versions_as_failed(reuser_job_id)
+    dataset = test_session.catalog.get_dataset(dataset_created.name, versions=None)
+    assert dataset.get_version(dataset.latest_version).status == DatasetStatus.CREATED
+
+    metastore.mark_job_dataset_versions_as_failed(job.id)
+    dataset = test_session.catalog.get_dataset(dataset_created.name, versions=None)
+    assert dataset.get_version(dataset.latest_version).status == DatasetStatus.FAILED
+
+
+def test_mark_job_dataset_versions_as_failed_uses_legacy_fallback(
+    test_session, job, dataset_created
+):
+    metastore = test_session.catalog.metastore
+    dataset_version = dataset_created.get_version(dataset_created.latest_version)
+    metastore.db.execute(
+        metastore._dataset_version_jobs_delete().where(
+            metastore._dataset_version_jobs.c.dataset_version_id == dataset_version.id,
+            metastore._dataset_version_jobs.c.is_creator.is_(True),
+        )
+    )
+
+    metastore.mark_job_dataset_versions_as_failed(job.id)
+
+    dataset = test_session.catalog.get_dataset(dataset_created.name, versions=None)
+    assert dataset.get_version(dataset.latest_version).status == DatasetStatus.FAILED
+
+
 def test_mark_job_dataset_versions_as_failed_preserves_tombstones(
     test_session, job, dataset_complete
 ):
