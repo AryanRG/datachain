@@ -1952,15 +1952,24 @@ class AbstractDBMetastore(AbstractMetastore):
         d = self._datasets
         dv = self._datasets_versions
         j = self._jobs
+        dvj = self._dataset_version_jobs
+        creator_job_id = f.coalesce(dvj.c.job_id, dv.c.job_id)
 
-        # LEFT JOIN on jobs so versions with job_id=NULL are included.
-        # Only skip versions whose job is still running.
+        # Keep legacy job_id as a fallback for versions created before creator
+        # links were recorded. Only skip versions whose creator job is running.
         query = (
             self._datasets_select(*select_cols)
             .select_from(
                 base_from.join(
+                    dvj,
+                    and_(
+                        dvj.c.dataset_version_id == dv.c.id,
+                        dvj.c.is_creator.is_(True),
+                    ),
+                    isouter=True,
+                ).join(
                     j,
-                    cast(dv.c.job_id, j.c.id.type) == j.c.id,
+                    cast(creator_job_id, j.c.id.type) == j.c.id,
                     isouter=True,
                 )
             )
@@ -1984,7 +1993,7 @@ class AbstractDBMetastore(AbstractMetastore):
                                 ]
                             ),
                             and_(
-                                dv.c.job_id.is_(None),
+                                creator_job_id.is_(None),
                                 dv.c.created_at
                                 < datetime.now(UTC)
                                 - timedelta(hours=STALE_CREATED_THRESHOLD_HOURS),
@@ -2000,7 +2009,7 @@ class AbstractDBMetastore(AbstractMetastore):
                     and_(
                         d.c.name.startswith(SESSION_DATASET_PREFIX, autoescape=True),
                         dv.c.status == DatasetStatus.COMPLETE,
-                        dv.c.job_id.isnot(None),
+                        creator_job_id.isnot(None),
                         j.c.status.in_(
                             [
                                 JobStatus.COMPLETE,
@@ -2014,7 +2023,7 @@ class AbstractDBMetastore(AbstractMetastore):
         )
 
         if job_id is not None:
-            query = query.where(dv.c.job_id == job_id)
+            query = query.where(creator_job_id == job_id)
 
         versions = self._fetch_version_pairs(query)
         if job_id is None:

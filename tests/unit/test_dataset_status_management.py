@@ -205,16 +205,41 @@ def test_get_dataset_versions_to_clean_skips_running_jobs(
 def test_get_dataset_versions_to_clean_scoped_to_job(
     test_session, job, dataset_created
 ):
-    test_session.catalog.metastore.set_job_status(job.id, JobStatus.FAILED)
-    to_clean = test_session.catalog.metastore.get_dataset_versions_to_clean(
-        job_id=job.id
+    metastore = test_session.catalog.metastore
+    other_job_id = metastore.create_job("reuser", "")
+    metastore.set_job_status(other_job_id, JobStatus.FAILED)
+    dataset_version = dataset_created.get_version(dataset_created.latest_version)
+    metastore.link_dataset_version_to_job(dataset_version.id, other_job_id)
+    metastore.db.execute(
+        metastore._datasets_versions_update()
+        .where(metastore._datasets_versions.c.id == dataset_version.id)
+        .values(job_id=other_job_id)
     )
+    test_session.catalog.metastore.set_job_status(job.id, JobStatus.FAILED)
+
+    to_clean = metastore.get_dataset_versions_to_clean(job_id=job.id)
+    assert dataset_created.name in {ds.name for ds, _ in to_clean}
+
+    to_clean = metastore.get_dataset_versions_to_clean(job_id=other_job_id)
+    assert dataset_created.name not in {ds.name for ds, _ in to_clean}
+
+    # Versions from before creator links were recorded still use the legacy ID.
+    metastore.db.execute(
+        metastore._dataset_version_jobs_delete().where(
+            metastore._dataset_version_jobs.c.dataset_version_id == dataset_version.id,
+            metastore._dataset_version_jobs.c.is_creator.is_(True),
+        )
+    )
+    metastore.db.execute(
+        metastore._datasets_versions_update()
+        .where(metastore._datasets_versions.c.id == dataset_version.id)
+        .values(job_id=job.id)
+    )
+    to_clean = metastore.get_dataset_versions_to_clean(job_id=job.id)
     assert dataset_created.name in {ds.name for ds, _ in to_clean}
 
     # Non-existent job_id returns nothing
-    to_clean = test_session.catalog.metastore.get_dataset_versions_to_clean(
-        job_id="nonexistent"
-    )
+    to_clean = metastore.get_dataset_versions_to_clean(job_id="nonexistent")
     assert len(to_clean) == 0
 
 
@@ -436,6 +461,11 @@ def test_get_dataset_versions_to_clean_finds_no_job_id(test_session):
     dv = test_session.catalog.metastore._datasets_versions
     test_session.catalog.metastore.db.execute(
         dv.update().where(dv.c.dataset_id == dataset.id).values(job_id=None)
+    )
+    version_id = dataset.get_version(dataset.latest_version).id
+    dvj = test_session.catalog.metastore._dataset_version_jobs
+    test_session.catalog.metastore.db.execute(
+        dvj.delete().where(dvj.c.dataset_version_id == version_id)
     )
 
     # Freshly created — should NOT be returned (protects in-flight pulls)
