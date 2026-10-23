@@ -1358,6 +1358,7 @@ class AbstractDBMetastore(AbstractMetastore):
             finished_at = None
 
         my_uuid = uuid or str(uuid4())
+        job_id = job_id or os.getenv("DATACHAIN_JOB_ID")
 
         query = self._datasets_versions_insert().values(
             dataset_id=dataset.id,
@@ -1376,7 +1377,6 @@ class AbstractDBMetastore(AbstractMetastore):
             num_objects=num_objects,
             size=size,
             preview=json.dumps(preview or []),
-            job_id=job_id or os.getenv("DATACHAIN_JOB_ID"),
             content_hash=content_hash,
             pending_metadata_drop=False,
         )
@@ -1400,6 +1400,12 @@ class AbstractDBMetastore(AbstractMetastore):
         # differ from ours.
         dataset_version = dataset.get_version(version)
         version_created = dataset_version.uuid == my_uuid
+
+        if version_created and job_id:
+            self.link_dataset_version_to_job(
+                dataset_version.id, job_id, is_creator=True
+            )
+            dataset_version.creator_job_id = job_id
 
         return dataset, version_created
 
@@ -1523,8 +1529,8 @@ class AbstractDBMetastore(AbstractMetastore):
                 version_values["_preview_loaded"] = True
             else:
                 values[field] = value
-                # TODO(#1487): Remove once version writes no longer update the
-                # legacy datasets_versions.job_id column.
+                # TODO(#1487): Remove when the legacy job_id mirror is removed
+                # from link_dataset_version_to_job().
                 version_values["creator_job_id" if field == "job_id" else field] = value
 
         version_obj = dataset.get_version(version)

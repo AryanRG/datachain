@@ -3391,12 +3391,6 @@ class DatasetQuery:
             self.catalog.warehouse.rename_table(temp_table, final_table_name)
             self.temp_table_names.remove(temp_table_name)
 
-            # Link this dataset version to the job that created it
-            if job_id:
-                self.catalog.metastore.link_dataset_version_to_job(
-                    dataset.get_version(version).id, job_id, is_creator=True
-                )
-
             if dependencies:
                 # overriding dependencies
                 self.dependencies = set()

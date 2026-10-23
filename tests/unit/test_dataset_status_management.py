@@ -69,6 +69,9 @@ def test_mark_job_dataset_versions_as_failed(test_session, job, dataset_created)
     dataset_version = dataset.get_version(dataset.latest_version)
     assert dataset_version.status == DatasetStatus.CREATED
     assert dataset_version.creator_job_id == job.id
+    assert test_session.catalog.metastore.get_dataset_version_creator_job_ids(
+        [dataset_version.id]
+    ) == {dataset_version.id: job.id}
 
     test_session.catalog.metastore.mark_job_dataset_versions_as_failed(job.id)
 

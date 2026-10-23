@@ -239,6 +239,17 @@ def test_create_dataset_version(metastore):
     assert dv.sources == "gs://test_source"
     assert dv.query_script == query_script
     assert dv.creator_job_id == job_id
+    assert metastore.get_dataset_version_creator_job_ids([dv.id]) == {dv.id: job_id}
+
+    _, version_created = metastore.create_dataset_version(
+        ds,
+        "1.2.3",
+        status=DatasetStatus.COMPLETE,
+        job_id=str(uuid4()),
+        ignore_if_exists=True,
+    )
+    assert version_created is False
+    assert metastore.get_dataset_version_creator_job_ids([dv.id]) == {dv.id: job_id}
 
     ds_with_preview = metastore.get_dataset(
         ds.name,
@@ -248,6 +259,25 @@ def test_create_dataset_version(metastore):
         include_preview=True,
     )
     assert ds_with_preview.get_version("1.2.3").preview == preview
+
+
+def test_create_dataset_version_uses_job_id_environment_fallback(
+    metastore, monkeypatch
+):
+    job_id = str(uuid4())
+    monkeypatch.setenv("DATACHAIN_JOB_ID", job_id)
+    dataset = metastore.create_dataset("test_dataset_job_id_fallback")
+
+    dataset, version_created = metastore.create_dataset_version(
+        dataset, "1.0.0", DatasetStatus.CREATED
+    )
+
+    dataset_version = dataset.get_version("1.0.0")
+    assert version_created
+    assert dataset_version.creator_job_id == job_id
+    assert metastore.get_dataset_version_creator_job_ids([dataset_version.id]) == {
+        dataset_version.id: job_id
+    }
 
 
 def test_create_dataset_version_finished_at(metastore):
