@@ -12,6 +12,7 @@ from datachain.dataset import (
     DatasetDependency,
     DatasetDependencyType,
     DatasetListRecord,
+    DatasetListVersion,
     DatasetRecord,
     DatasetStatus,
     DatasetVersion,
@@ -130,11 +131,26 @@ def test_dataset_version_from_dict(use_string):
         "num_objects": 100,
         "size": 1000000,
         "preview": preview_data,
+        "job_id": "creator-job",
         "_preview_loaded": True,
     }
 
     dataset_version = DatasetVersion.from_dict(data)
     assert dataset_version.preview == preview
+    assert dataset_version.creator_job_id == "creator-job"
+    serialized = dataset_version.to_dict()
+    assert serialized["job_id"] == "creator-job"
+    assert DatasetVersion.from_dict(serialized).creator_job_id == "creator-job"
+
+
+def test_dataset_list_version_preserves_job_id_wire_field(dataset_list_record):
+    version = dataset_list_record.all_versions[0]
+    version.creator_job_id = "creator-job"
+
+    serialized = version.to_dict()
+
+    assert serialized["job_id"] == "creator-job"
+    assert DatasetListVersion.from_dict(serialized).creator_job_id == "creator-job"
 
 
 @pytest.mark.parametrize(

@@ -238,7 +238,7 @@ def test_create_dataset_version(metastore):
     assert dv.size == 1000
     assert dv.sources == "gs://test_source"
     assert dv.query_script == query_script
-    assert dv.job_id == job_id
+    assert dv.creator_job_id == job_id
 
     ds_with_preview = metastore.get_dataset(
         ds.name,
@@ -510,7 +510,7 @@ def test_update_dataset_version(metastore):
     assert updated_dv._preview_data == preview
     assert updated_dv.sources == "gs://test_source"
     assert updated_dv.query_script == query_script
-    assert updated_dv.job_id == job_id
+    assert updated_dv.creator_job_id == job_id
 
     # test if method input dataset param is also mutated
     assert dv.status == DatasetStatus.COMPLETE
@@ -534,7 +534,7 @@ def test_update_dataset_version(metastore):
     assert updated_dv.num_objects is None
     assert updated_dv.size is None
     assert updated_dv._preview_data is None
-    assert updated_dv.job_id is None
+    assert updated_dv.creator_job_id is None
 
 
 def test_update_dataset_version_read_only_values(metastore):

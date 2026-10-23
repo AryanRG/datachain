@@ -70,10 +70,11 @@ def test_single_job_for_multiple_saves(tmp_path, catalog_tmpfile):
     assert "nums_gt_1" in dataset_names
     assert "vals_lt_35" in dataset_names
 
-    # Verify all dataset versions have the correct job_id
+    # Verify all dataset versions have the correct creator job ID
     for ds, version, _ in dataset_versions:
-        assert version.job_id == job.id, (
-            f"Dataset {ds.name} version has job_id={version.job_id}, expected {job.id}"
+        assert version.creator_job_id == job.id, (
+            f"Dataset {ds.name} version has creator_job_id={version.creator_job_id}, "
+            f"expected {job.id}"
         )
 
 

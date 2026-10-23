@@ -158,7 +158,7 @@ def test_dataset_version_job_id_stays_on_creator(test_session, nums_dataset):
 
     dataset = catalog.get_dataset(name, versions=None)
     assert dataset.latest_version == "1.0.0"
-    assert dataset.get_version("1.0.0").job_id == job1_id
+    assert dataset.get_version("1.0.0").creator_job_id == job1_id
     assert get_dataset_versions_for_job(metastore, job1_id) == [(name, "1.0.0", True)]
     assert get_dataset_versions_for_job(metastore, job2_id) == [(name, "1.0.0", False)]
     assert get_dataset_versions_for_job(metastore, job3_id) == [(name, "1.0.0", False)]

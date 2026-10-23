@@ -301,7 +301,7 @@ class DatasetVersion:
     _preview_loaded: bool = field(kw_only=True)
     sources: str = ""
     query_script: str = ""
-    job_id: str | None = None
+    creator_job_id: str | None = field(default=None, metadata={"alias": "job_id"})
     content_hash: str | None = None
     removed_at: datetime | None = None
     pending_metadata_drop: bool = False
@@ -326,7 +326,7 @@ class DatasetVersion:
         schema: str | dict[str, SQLType | type[SQLType]],
         sources: str = "",
         query_script: str = "",
-        job_id: str | None = None,
+        creator_job_id: str | None = None,
         content_hash: str | None = None,
         removed_at: datetime | None = None,
         pending_metadata_drop: bool = False,
@@ -356,7 +356,7 @@ class DatasetVersion:
             _preview_data=preview,
             sources=sources,
             query_script=query_script,
-            job_id=job_id,
+            creator_job_id=creator_job_id,
             content_hash=content_hash,
             removed_at=removed_at,
             pending_metadata_drop=pending_metadata_drop,
@@ -426,6 +426,8 @@ class DatasetVersion:
             for f in fields(cls)
             if f.name in d and f.name != "_preview_data"
         }
+        if "creator_job_id" not in kwargs and "job_id" in d:
+            kwargs["creator_job_id"] = d["job_id"]
         kwargs["_preview_data"] = d["preview"]
         return cls(**kwargs)
 
@@ -444,7 +446,7 @@ class DatasetListVersion:
     num_objects: int | None
     size: int | None
     query_script: str = ""
-    job_id: str | None = None
+    creator_job_id: str | None = None
 
     @classmethod
     def parse(
@@ -461,7 +463,7 @@ class DatasetListVersion:
         num_objects: int | None,
         size: int | None,
         query_script: str = "",
-        job_id: str | None = None,
+        creator_job_id: str | None = None,
         **kwargs,
     ):
         return cls(
@@ -477,15 +479,19 @@ class DatasetListVersion:
             num_objects,
             size,
             query_script,
-            job_id,
+            creator_job_id,
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {f.name: getattr(self, f.name) for f in fields(self)}
+        result = {f.name: getattr(self, f.name) for f in fields(self)}
+        result["job_id"] = result.pop("creator_job_id")
+        return result
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "DatasetListVersion":
         kwargs = {f.name: d[f.name] for f in fields(cls) if f.name in d}
+        if "creator_job_id" not in kwargs and "job_id" in d:
+            kwargs["creator_job_id"] = d["job_id"]
         return cls(**kwargs)
 
     def __hash__(self):
@@ -604,7 +610,7 @@ class DatasetRecord:
         version_sources: str | None = None,
         version_query_script: str | None = None,
         version_schema: str | None = None,
-        version_job_id: str | None = None,
+        version_creator_job_id: str | None = None,
         version_content_hash: str | None = None,
         version_removed_at: datetime | None = None,
         version_pending_metadata_drop: bool = False,
@@ -664,7 +670,7 @@ class DatasetRecord:
                 version_schema,
                 version_sources or "",
                 version_query_script or "",
-                version_job_id,
+                version_creator_job_id,
                 version_content_hash,
                 version_removed_at,
                 version_pending_metadata_drop,
@@ -975,7 +981,7 @@ class DatasetListRecord:
         version_num_objects: int | None,
         version_size: int | None,
         version_query_script: str | None,
-        version_job_id: str | None = None,
+        version_creator_job_id: str | None = None,
     ) -> "DatasetListRecord":
         attrs_lst: list[str] = json.loads(attrs) if attrs else []
 
@@ -1009,7 +1015,7 @@ class DatasetListRecord:
             version_num_objects,
             version_size,
             version_query_script,  # type: ignore[arg-type]
-            version_job_id,
+            version_creator_job_id,
         )
 
         return cls(

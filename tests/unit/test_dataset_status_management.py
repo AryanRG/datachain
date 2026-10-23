@@ -68,7 +68,7 @@ def test_mark_job_dataset_versions_as_failed(test_session, job, dataset_created)
     dataset = test_session.catalog.get_dataset(dataset_created.name, versions=None)
     dataset_version = dataset.get_version(dataset.latest_version)
     assert dataset_version.status == DatasetStatus.CREATED
-    assert dataset_version.job_id == job.id
+    assert dataset_version.creator_job_id == job.id
 
     test_session.catalog.metastore.mark_job_dataset_versions_as_failed(job.id)
 
@@ -86,7 +86,7 @@ def test_mark_job_dataset_versions_as_failed_skips_complete(
     dataset = test_session.catalog.get_dataset(dataset_complete.name, versions=None)
     dataset_version = dataset.get_version(dataset_complete.latest_version)
     assert dataset_version.status == DatasetStatus.COMPLETE
-    assert dataset_version.job_id == job.id
+    assert dataset_version.creator_job_id == job.id
 
     test_session.catalog.metastore.mark_job_dataset_versions_as_failed(job.id)
 

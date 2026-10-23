@@ -384,7 +384,7 @@ def test_checkpoint_with_deleted_dataset_version(test_session, nums_dataset):
     assert dataset.latest_version == "1.0.1"
 
     new_version = dataset.get_version("1.0.1")
-    assert new_version.job_id == job2_id
+    assert new_version.creator_job_id == job2_id
 
 
 def test_udf_checkpoints_multiple_calls_same_job(

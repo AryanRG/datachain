@@ -1679,8 +1679,13 @@ class Catalog:
         # preselect dataset versions jobs from db to avoid multiple queries
         jobs: dict[str, Job] = {}
         if with_job:
+            # TODO(#1487): Resolve the creator through dataset_version_jobs instead
+            # of the creator_job_id value projected from datasets_versions.job_id.
             jobs_ids: set[str] = {
-                v.job_id for ds in datasets for v in ds.all_versions if v.job_id
+                v.creator_job_id
+                for ds in datasets
+                for v in ds.all_versions
+                if v.creator_job_id
             }
             if jobs_ids:
                 jobs = {
@@ -1689,7 +1694,13 @@ class Catalog:
 
         for d in datasets:
             yield from (
-                (d, v, jobs.get(str(v.job_id)) if with_job and v.job_id else None)
+                (
+                    d,
+                    v,
+                    jobs.get(str(v.creator_job_id))
+                    if with_job and v.creator_job_id
+                    else None,
+                )
                 for v in d.all_versions
             )
 

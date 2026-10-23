@@ -900,11 +900,18 @@ class AbstractDBMetastore(AbstractMetastore):
 
     @cached_property
     def _dataset_list_version_fields(self) -> list[str]:
+        version_fields = self.dataset_list_version_class.__dataclass_fields__
         return [
-            c.name  # type: ignore [attr-defined]
+            c.name
             for c in self._datasets_versions_columns()
-            if c.name  # type: ignore [attr-defined]
-            in self.dataset_list_version_class.__dataclass_fields__
+            if isinstance(c, Column)
+            and c.name
+            and (
+                c.name in version_fields
+                # TODO(#1487): Drop this legacy-column projection when with_job
+                # reads the creator link directly.
+                or (c.name == "job_id" and "creator_job_id" in version_fields)
+            )
         ]
 
     @classmethod
@@ -1510,7 +1517,9 @@ class AbstractDBMetastore(AbstractMetastore):
                 version_values["_preview_loaded"] = True
             else:
                 values[field] = value
-                version_values[field] = value
+                # TODO(#1487): Remove once version writes no longer update the
+                # legacy datasets_versions.job_id column.
+                version_values["creator_job_id" if field == "job_id" else field] = value
 
         version_obj = dataset.get_version(version)
 

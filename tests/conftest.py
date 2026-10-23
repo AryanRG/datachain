@@ -858,7 +858,7 @@ def dataset_list_record():
                 num_objects=50,
                 size=5000,
                 query_script="",
-                job_id="",
+                creator_job_id="",
             ),
             DatasetListVersion(
                 id=2,
