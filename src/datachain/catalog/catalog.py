@@ -1676,30 +1676,39 @@ class Catalog:
             )
         )
 
-        # preselect dataset versions jobs from db to avoid multiple queries
-        jobs: dict[str, Job] = {}
+        # Resolve creator jobs in batches, preferring the relation table while
+        # retaining the legacy field as a fallback for versions not yet linked.
+        jobs_by_version_id: dict[int, Job] = {}
         if with_job:
-            # TODO(#1487): Resolve the creator through dataset_version_jobs instead
-            # of the creator_job_id value projected from datasets_versions.job_id.
-            jobs_ids: set[str] = {
-                v.creator_job_id
-                for ds in datasets
-                for v in ds.all_versions
-                if v.creator_job_id
+            versions = [v for ds in datasets for v in ds.all_versions]
+            creator_job_ids = {
+                v.id: v.creator_job_id for v in versions if v.creator_job_id
             }
-            if jobs_ids:
-                jobs = {
-                    j.id: j for j in self.metastore.list_jobs_by_ids(list(jobs_ids))
+            creator_job_ids.update(
+                self.metastore.get_dataset_version_creator_job_ids(
+                    [v.id for v in versions]
+                )
+            )
+            jobs_by_id = {}
+            if creator_job_ids:
+                jobs_by_id = {
+                    job.id: job
+                    for job in self.metastore.list_jobs_by_ids(
+                        list(set(creator_job_ids.values()))
+                    )
                 }
+            jobs_by_version_id = {
+                version_id: jobs_by_id[job_id]
+                for version_id, job_id in creator_job_ids.items()
+                if job_id in jobs_by_id
+            }
 
         for d in datasets:
             yield from (
                 (
                     d,
                     v,
-                    jobs.get(str(v.creator_job_id))
-                    if with_job and v.creator_job_id
-                    else None,
+                    jobs_by_version_id.get(v.id),
                 )
                 for v in d.all_versions
             )

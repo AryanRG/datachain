@@ -724,6 +724,12 @@ class AbstractMetastore(ABC, Serializable):
     ) -> None:
         """Link dataset version to job. Must be atomic."""
 
+    def get_dataset_version_creator_job_ids(
+        self, dataset_version_ids: Sequence[int]
+    ) -> dict[int, str]:
+        """Return creator job IDs for versions that have creator links."""
+        return {}
+
     @abstractmethod
     def get_dataset_version_for_job_ancestry(
         self,
@@ -908,8 +914,8 @@ class AbstractDBMetastore(AbstractMetastore):
             and c.name
             and (
                 c.name in version_fields
-                # TODO(#1487): Drop this legacy-column projection when with_job
-                # reads the creator link directly.
+                # TODO(#1487): Drop this legacy-column projection once existing
+                # versions are backfilled with creator links and need no fallback.
                 or (c.name == "job_id" and "creator_job_id" in version_fields)
             )
         ]
@@ -2961,6 +2967,22 @@ class AbstractDBMetastore(AbstractMetastore):
                     .values(job_id=job_id)
                 )
                 self.db.execute(update_query)
+
+    def get_dataset_version_creator_job_ids(
+        self, dataset_version_ids: Sequence[int]
+    ) -> dict[int, str]:
+        """Return creator job IDs from the dataset-version/job relation."""
+        if not dataset_version_ids:
+            return {}
+
+        query = self._dataset_version_jobs_select(
+            self._dataset_version_jobs.c.dataset_version_id,
+            self._dataset_version_jobs.c.job_id,
+        ).where(
+            self._dataset_version_jobs.c.dataset_version_id.in_(dataset_version_ids),
+            self._dataset_version_jobs.c.is_creator.is_(True),
+        )
+        return dict(self.db.execute(query))
 
     def get_ancestor_job_ids(self, job_id: str) -> list[str]:
         """Get all ancestor job IDs using recursive CTE."""

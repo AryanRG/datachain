@@ -251,6 +251,47 @@ def test_list_datasets_single_version(metastore):
     assert results["list-single"].versions[0].version == "1.0.0"
 
 
+def test_list_dataset_versions_uses_creator_links_with_legacy_fallback(
+    catalog, metastore
+):
+    dataset = metastore.create_dataset("list-creator-jobs")
+    creator_job_id = metastore.create_job("creator", "")
+    other_job_id = metastore.create_job("other", "")
+    dataset, _ = metastore.create_dataset_version(
+        dataset,
+        "1.0.0",
+        DatasetStatus.COMPLETE,
+        job_id=creator_job_id,
+    )
+    dataset, _ = metastore.create_dataset_version(
+        dataset,
+        "1.0.1",
+        DatasetStatus.COMPLETE,
+        job_id=creator_job_id,
+    )
+    dataset = metastore.get_dataset(dataset.name, versions=None)
+
+    # A creator link takes precedence over the legacy datasets_versions.job_id.
+    metastore.link_dataset_version_to_job(
+        dataset.get_version("1.0.0").id, creator_job_id, is_creator=True
+    )
+    metastore.link_dataset_version_to_job(dataset.get_version("1.0.0").id, other_job_id)
+    metastore.db.execute(
+        metastore._datasets_versions_update()
+        .where(metastore._datasets_versions.c.id == dataset.get_version("1.0.0").id)
+        .values(job_id=other_job_id)
+    )
+
+    jobs_by_version = {
+        version.version: job
+        for listed_dataset, version, job in catalog.list_datasets_versions()
+        if listed_dataset.name == dataset.name
+    }
+    assert jobs_by_version["1.0.0"].id == creator_job_id
+    # Existing versions without a creator link still use the legacy field.
+    assert jobs_by_version["1.0.1"].id == creator_job_id
+
+
 def test_list_datasets_multiple_versions_sorted(metastore):
     ds = metastore.create_dataset("list-multi")
     for v in ("2.0.0", "1.0.0", "3.0.0"):
