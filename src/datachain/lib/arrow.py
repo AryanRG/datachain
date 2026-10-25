@@ -9,7 +9,7 @@ from fsspec.implementations.http import HTTPFileSystem
 from fsspec.implementations.local import LocalFileSystem
 from pyarrow._csv import ParseOptions
 from pyarrow.dataset import CsvFileFormat, Dataset, ParquetFileFormat, dataset
-from pyarrow.fs import FSSpecHandler, PyFileSystem
+from pyarrow.fs import FileInfo, FileType, FSSpecHandler, PyFileSystem
 
 from datachain import json
 from datachain.fs.reference import ReferenceFileSystem
@@ -84,8 +84,15 @@ class _PartialReadHandler(FSSpecHandler):
         self.client = client
         self.file = file
 
+    def get_file_info(self, paths):
+        # Describes the recorded file without looking up the latest object, which a
+        # versioned bucket may have deleted since.
+        return [FileInfo(path, FileType.File) for path in paths]
+
     def open_input_file(self, path):
-        f = self.client.open_object(self.file, use_cache=False, cache_type="none")
+        f = self.client.open_object(
+            self.file, use_cache=False, cb=self.file._download_cb, cache_type="none"
+        )
         return pa.PythonFile(f, mode="r")
 
 
@@ -136,14 +143,15 @@ class ArrowGenerator(Generator):
             fs_path = file.path
             fs = ReferenceFileSystem({fs_path: [cache_path]})
         else:
-            fs, fs_path = file.get_fs(), file.get_fs_path()
+            client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
+            if not file.location:
+                # Prefetch would check this before downloading the file.
+                client.check_unchanged(file)
+            fs, fs_path = client.fs, file.get_fs_path()
             # pyarrow reads local files natively, and HTTP servers without range
             # support need read-ahead blocks.
             parquet = is_parquet(self.kwargs.get("format"))
             if parquet and not isinstance(fs, (LocalFileSystem, HTTPFileSystem)):
-                client = file._catalog.get_client(file.source)  # type: ignore[union-attr]
-                # Prefetch would check this before downloading the file.
-                client.check_unchanged(file)
                 fs = PyFileSystem(_PartialReadHandler(client, file))
 
         kwargs = self.kwargs

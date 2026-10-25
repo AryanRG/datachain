@@ -1404,3 +1404,21 @@ def mock_parquet_data(compressed_parquet_data, dog_entries, version="1.0.0"):
 def mock_parquet_data_cloud(compressed_parquet_data, dog_entries, cloud_test_catalog):
     src_uri = cloud_test_catalog.src_uri
     return compressed_parquet_data(dog_entries("1.0.0"), src_uri)
+
+
+@pytest.fixture
+def fetched_bytes(monkeypatch):
+    from adlfs.spec import AzureBlobFile
+    from gcsfs.core import GCSFile
+    from s3fs.core import S3File
+
+    fetched = [0]
+    for cls in (S3File, GCSFile, AzureBlobFile):
+
+        def fetch_range(self, *args, _orig=cls._fetch_range, **kwargs):
+            data = _orig(self, *args, **kwargs)
+            fetched[0] += len(data)
+            return data
+
+        monkeypatch.setattr(cls, "_fetch_range", fetch_range)
+    return fetched

@@ -11,6 +11,8 @@ from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 import datachain as dc
@@ -22,7 +24,7 @@ from datachain.lib.file import File, ImageFile
 from datachain.lib.listing import LISTING_TTL, is_listing_dataset, parse_listing_uri
 from datachain.lib.model_store import ModelStore
 from datachain.lib.tar import process_tar
-from datachain.query.dataset import QueryStep
+from datachain.query.dataset import QueryStep, get_download_callback
 from tests.utils import (
     ANY_VALUE,
     TARRED_TREE,
@@ -1528,6 +1530,93 @@ def test_to_read_parquet_partitioned_remote(cloud_test_catalog_upload):
     df1 = dc_from.select("first_name", "age", "city").to_pandas()
     df1 = df1.sort_values("first_name").reset_index(drop=True)
     assert df_equal(df1, df)
+
+
+@pytest.mark.filterwarnings("ignore:Sending a large body:ResourceWarning")
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_read_parquet_columns_fetch_only_those_columns(
+    cloud_test_catalog_upload, fetched_bytes, monkeypatch, tmp_path
+):
+    callbacks = []
+
+    def download_callback(*args, **kwargs):
+        callbacks.append(get_download_callback(*args, **kwargs))
+        return callbacks[-1]
+
+    monkeypatch.setattr(
+        "datachain.query.dataset.get_download_callback", download_callback
+    )
+    ctc = cloud_test_catalog_upload
+    rng = np.random.default_rng(0)
+    table = pa.table({f"c{i}": rng.random(50_000) for i in range(10)})
+    local = tmp_path / "wide.parquet"
+    pq.write_table(table, local, row_group_size=10_000)
+    ctc.src.fs.put_file(str(local), str(ctc.src / local.name))
+    uri = f"{ctc.src_uri}/{local.name}"
+    chain = dc.read_parquet(uri, columns=["c3"], session=ctc.session)
+    fetched_bytes[0] = 0
+
+    values = chain.order_by("source.index").to_values("c3")
+
+    assert values == table["c3"].to_pylist()
+    assert 0 < fetched_bytes[0] < local.stat().st_size // 4
+    assert sum(cb.value for cb in callbacks) > 0
+
+
+def _put_parquet(ctc, tmp_path, name, values):
+    local = tmp_path / name
+    pq.write_table(pa.table({"value": values}), local)
+    ctc.src.fs.put_file(str(local), str(ctc.src / name))
+    return f"{ctc.src_uri}/{name}"
+
+
+def _read_recorded(ctc, file):
+    return dc.read_values(file=[file], session=ctc.session).parse_tabular(
+        format="parquet", columns=["value"]
+    )
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_read_parquet_columns_read_the_recorded_version(
+    cloud_test_catalog_upload, tmp_path
+):
+    ctc = cloud_test_catalog_upload
+    uri = _put_parquet(ctc, tmp_path, "v.parquet", [1])
+    old = File.at(uri, session=ctc.session).resolve()
+    _put_parquet(ctc, tmp_path, "v.parquet", [2, 2, 2])
+
+    assert _read_recorded(ctc, old).to_values("value") == [1]
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_read_parquet_columns_read_a_recorded_version_deleted_since(
+    cloud_test_catalog_upload, tmp_path
+):
+    ctc = cloud_test_catalog_upload
+    uri = _put_parquet(ctc, tmp_path, "d.parquet", [1])
+    old = File.at(uri, session=ctc.session).resolve()
+    chain = _read_recorded(ctc, old)
+    ctc.src.fs.rm(str(ctc.src / "d.parquet"))
+    ctc.catalog.get_client(ctc.src_uri).fs.invalidate_cache()
+
+    assert chain.to_values("value") == [1]
+
+
+@pytest.mark.parametrize("cloud_type", ["file", "s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_read_parquet_columns_reject_a_changed_file(
+    cloud_test_catalog_upload, tmp_path
+):
+    ctc = cloud_test_catalog_upload
+    uri = _put_parquet(ctc, tmp_path, "c.parquet", [1])
+    old = File.at(uri, session=ctc.session).resolve()
+    _put_parquet(ctc, tmp_path, "c.parquet", [2, 2, 2])
+
+    with pytest.raises(FileNotFoundError):
+        _read_recorded(ctc, old).to_values("value")
 
 
 # These deprecation warnings occur in the datamodel-code-generator package.
