@@ -10,7 +10,9 @@ import datachain as dc
 import datachain.lib.listing as listing_lib
 from datachain.cli import garbage_collect
 from datachain.client import Client
+from datachain.client.local import FileClient
 from datachain.error import DatasetNotFoundError
+from datachain.lib.file import File
 from datachain.lib.listing import parse_listing_uri
 from tests.data import ENTRIES
 from tests.utils import DEFAULT_TREE, skip_if_not_sqlite, tree_from_path
@@ -900,6 +902,32 @@ def test_enlist_source_with_glob_in_parent(cloud_test_catalog, update):
         assert listing_stats(f"{ctc.src_uri}/dogs/", ctc.catalog) == (4, 15)
 
 
+@pytest.mark.parametrize("cloud_type", ["file", "s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize("pattern", ["*/dog4", "oth*/dog4", "*/dog4/"])
+@pytest.mark.parametrize("operation", ["ls", "cp"])
+def test_catalog_literal_file_after_glob(
+    cloud_test_catalog, tmp_path, pattern, operation
+):
+    ctc = cloud_test_catalog
+    source = f"{ctc.src_uri}/dogs/{pattern}"
+    if operation == "ls":
+        rows = [
+            row
+            for _, result in ctc.catalog.ls([source], fields=["name"])
+            for row in result
+        ]
+        assert rows == ([] if pattern.endswith("/") else [("dog4",)])
+    else:
+        output = tmp_path / "downloaded"
+        if pattern.endswith("/"):
+            with pytest.raises(FileNotFoundError):
+                ctc.catalog.cp([source], str(output))
+        else:
+            ctc.catalog.cp([source], str(output))
+            assert output.read_text() == DEFAULT_TREE["dogs"]["others"]["dog4"]
+
+
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 def test_enlist_source_keeps_repeated_slashes(cloud_test_catalog):
     ctc = cloud_test_catalog
@@ -1008,6 +1036,77 @@ def test_enlist_source_normalizes_local_glob_path(
     with enlist_source(ctc.catalog, f"{root}/d*//others/") as (listing, _, path):
         assert listing is not None
         assert path == "d*/others/"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX filesystem root")
+@pytest.mark.parametrize("source", ["/", "/core*", "file:///", "file:///core*"])
+def test_catalog_ls_filesystem_root(catalog, mocker, source):
+    scanned = []
+
+    async def scandir(client, start_prefix, method="default"):
+        scanned.append((Path(client.name), start_prefix))
+        yield [
+            File(source=client.uri, path="core-probe", size=1, etag="one"),
+            File(source=client.uri, path="other-probe", size=1, etag="two"),
+        ]
+
+    mocker.patch.object(FileClient, "scandir", scandir)
+    rows = [
+        row for _, result in catalog.ls([source], fields=["name"]) for row in result
+    ]
+
+    expected = [("core-probe",)]
+    if not source.endswith("*"):
+        expected.append(("other-probe",))
+    assert sorted(rows) == expected
+    assert scanned == [(Path("/"), "")]
+
+
+@pytest.mark.parametrize("cloud_type", ["file"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize("config", [None, {}], ids=["inherit", "empty"])
+@skip_if_not_sqlite
+def test_catalog_dataset_client_config_empty_or_inherited(
+    cloud_test_catalog, dogs_dataset, mocker, config
+):
+    ctc = cloud_test_catalog
+    original = {"use_symlinks": True}
+    ctc.catalog.client_config = original.copy()
+    clients = mocker.spy(Client, "get_client")
+    listings = mocker.patch(
+        "datachain.catalog.catalog.get_listing", wraps=listing_lib.get_listing
+    )
+    other = ctc.catalog.copy()
+    other.client_config = {}
+    with dc.Session("other", catalog=other):
+        uri = dogs_dataset.uri(version="1.0.0")
+        groups = ctc.catalog.enlist_sources_grouped(
+            [uri], update=False, client_config=config
+        )
+        try:
+            assert len(groups) == 1
+            assert groups[0].client.use_symlinks == (config is None)
+            assert sorted(source.node.path for source in groups[0].sources) == [
+                "dogs/dog1",
+                "dogs/dog2",
+                "dogs/dog3",
+                "dogs/others/dog4",
+            ]
+        finally:
+            for group in groups:
+                group.close()
+    assert clients.call_args_list
+    assert all(
+        bool(call.kwargs.get("use_symlinks")) == (config is None)
+        for call in clients.call_args_list
+    )
+    assert listings.call_args_list
+    assert all(
+        call.args[1].catalog.client_config == (original if config is None else {})
+        for call in listings.call_args_list
+    )
+    assert ctc.catalog.client_config == original
+    assert other.client_config == {}
 
 
 @pytest.mark.skipif(os.name != "nt", reason="drive letters exist only on Windows")

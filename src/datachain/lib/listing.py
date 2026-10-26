@@ -385,7 +385,8 @@ def parse_listing_uri(uri: str, versions: bool = True) -> tuple[str, str, str]:
     if uses_glob(path):
         lst_uri_path = posixpath.dirname(path)
     else:
-        storage_uri, path = Client.parse_url(f"{uri.rstrip('/')}/")
+        if path:
+            storage_uri, path = Client.parse_url(f"{uri.rstrip('/')}/")
         lst_uri_path = path
 
     lst_uri = f"{storage_uri}/{lst_uri_path.lstrip('/')}"

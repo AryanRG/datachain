@@ -600,7 +600,8 @@ class Catalog:
         from datachain.listing import SavedListing
 
         source = os.fspath(source)
-        if issubclass(Client.get_implementation(source), FileClient):
+        is_local = issubclass(Client.get_implementation(source), FileClient)
+        if is_local:
             # Local paths follow the filesystem parser; cloud tree keys stay raw.
             FileClient.validate_source(source)
             storage_uri, path = Client.parse_url(source)
@@ -620,8 +621,9 @@ class Catalog:
         )
         if pattern is not None:
             # Keep empty path segments in the tree selection (e.g. dir//*/x).
-            base = source_uri.rstrip("/")
-            pattern = source[len(base) :].removeprefix("/")
+            if not is_local:
+                base = source_uri.rstrip("/")
+                pattern = source[len(base) :].removeprefix("/")
             separator = "/" if list_path and not list_path.endswith("/") else ""
             list_path = list_path + separator + pattern
         list_ds_name = None
@@ -698,6 +700,7 @@ class Catalog:
         no_glob: bool = False,
         client_config=None,
     ) -> list[NodeGroup]:
+        from datachain.lib.dc.storage import _session_for
         from datachain.listing import SavedListing
         from datachain.query.dataset import DatasetQuery
 
@@ -711,6 +714,7 @@ class Catalog:
         for src in sources:  # Opt: parallel
             listing: SavedListing | None
             if src.startswith("ds://"):
+                session = _session_for(self.session, client_config, False)
                 (ds_namespace, ds_project, ds_name, ds_version) = parse_dataset_uri(src)
                 dataset = self.get_dataset(
                     ds_name,
@@ -727,9 +731,9 @@ class Catalog:
                 )
                 indexed_sources = []
                 for source in dataset_sources:
-                    client = self.get_client(source, **client_config)
+                    client = Client.get_client(source, self.cache, **client_config)
                     uri = client.uri
-                    dataset_name, _, _, _ = get_listing(uri, self.session)
+                    dataset_name, _, _, _ = get_listing(uri, session)
                     assert dataset_name
                     listing = SavedListing(
                         self.metastore.clone(),
