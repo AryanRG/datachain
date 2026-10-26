@@ -228,6 +228,48 @@ def test_calc_fingerprint_order_independent(test_session):
     assert fp1 == fp2
 
 
+@pytest.mark.parametrize(
+    "storage,etag_counts",
+    [("s3://bucket", False), ("gs://bucket", False), ("az://container", True)],
+    ids=["s3", "gs", "azure"],
+)
+def test_calc_fingerprint_etag_counts_only_where_versions_change(
+    test_session, storage, etag_counts
+):
+    fp1 = _fingerprint(
+        test_session, f"{storage}/a/", File(path="x.jpg", version="v1", etag="e1")
+    )
+    fp2 = _fingerprint(
+        test_session, f"{storage}/b/", File(path="x.jpg", version="v1", etag="e2")
+    )
+    assert (fp1 != fp2) == etag_counts
+
+
+def test_calc_fingerprint_changes_when_version_stops_being_latest(test_session):
+    fp1 = _fingerprint(test_session, "s3://bucket/a/", File(path="x.jpg", version="v1"))
+    fp2 = _fingerprint(
+        test_session,
+        "s3://bucket/b/",
+        File(path="x.jpg", version="v1", is_latest=False),
+    )
+    assert fp1 != fp2
+
+
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_listing_update_drops_deleted_file_on_versioned_storage(cloud_test_catalog):
+    ctc = cloud_test_catalog
+    uri = f"{ctc.src_uri}/dogs/"
+    dc.read_storage(uri, session=ctc.session).exec()
+
+    client = ctc.catalog.get_client(ctc.src_uri)
+    client.fs.rm(client.get_uri("dogs/dog1"))
+
+    paths = dc.read_storage(uri, session=ctc.session, update=True).to_values(
+        "file.path"
+    )
+    assert "dogs/dog1" not in paths
+
+
 def test_read_storage_single_local_file_deterministic_hash(test_session, tmp_dir):
     (tmp_dir / "a.txt").write_text("hello")
     uri = (tmp_dir / "a.txt").as_uri()
@@ -301,3 +343,14 @@ def test_listing_insert_batch_size(test_session, tmp_dir, mocker, settings):
     dc.read_storage(tmp_dir.as_uri(), session=test_session, settings=settings).exec()
 
     assert spy.call_args.kwargs["batch_size"] == LISTING_BATCH_SIZE
+
+
+def _fingerprint(session, uri: str, file: File) -> int:
+    catalog = session.catalog
+    name, _, _ = parse_listing_uri(uri)
+    dc.read_values(file=[file], session=session).settings(
+        namespace=catalog.metastore.system_namespace_name,
+        project=catalog.metastore.listing_project_name,
+    ).save(name, listing=True)
+    ds = catalog.get_dataset(name, versions=None)
+    return calc_fingerprint(session, ds, ds.latest_version)

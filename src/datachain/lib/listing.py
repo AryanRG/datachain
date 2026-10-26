@@ -47,9 +47,10 @@ logging.getLogger("gcsfs").setLevel(logging.CRITICAL)
 def calc_fingerprint(session: "Session", dataset: "DatasetRecord", version: str) -> int:
     """Compute an order-independent content fingerprint for a listing version.
 
-    Uses file path + version (if available) or etag as the content identifier.
-    Version is preferred over etag because etags can be unstable on some cloud
-    providers (GCS, Azure) due to internal operations like storage class changes.
+    Uses file path, ``is_latest`` and version (if available) or etag as the
+    content identifier. Version is preferred over etag because GCS changes etags
+    on metadata-only updates such as storage class changes. Where a version's
+    content can change in place (Azure page and append blobs), etag is used too.
     """
     # Inline imports: lib.listing sits below lib.dc / query.dataset / func in the
     # import graph (catalog.catalog imports this module during init), so hoisting
@@ -76,8 +77,10 @@ def calc_fingerprint(session: "Session", dataset: "DatasetRecord", version: str)
         (C("file.version") != "", C("file.version")),
         else_=C("file.etag"),
     )
+    client_cls = Client.get_implementation(listing_uri_from_name(dataset.name))
+    etag = () if client_cls.PINNED_VERSION_IS_IMMUTABLE else (C("file.etag"),)
     return chain.group_by(  # type: ignore[return-value]
-        fp=xor_agg(string_hash(C("file.path"), identifier)),
+        fp=xor_agg(string_hash(C("file.path"), identifier, C("file.is_latest"), *etag)),
     ).to_values("fp")[0]
 
 
