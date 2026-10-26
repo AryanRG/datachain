@@ -5,7 +5,6 @@ from itertools import islice
 from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
-from fsspec.implementations.http import HTTPFileSystem
 from fsspec.implementations.local import LocalFileSystem
 from pyarrow._csv import ParseOptions
 from pyarrow.dataset import CsvFileFormat, Dataset, ParquetFileFormat, dataset
@@ -75,9 +74,10 @@ def is_parquet(format: Any) -> bool:
 
 
 class _PartialReadHandler(FSSpecHandler):
-    """Opens the recorded version of a file without read-ahead, so reading some
-    columns of a Parquet file fetches only those columns. pyarrow merges nearby
-    reads itself."""
+    """Opens the recorded version of a file through its client, without read-ahead,
+    so reading some columns of a Parquet file fetches only those columns. pyarrow
+    merges nearby reads itself. HTTP keeps read-ahead for servers without range
+    support."""
 
     def __init__(self, client: "Client", file: File):
         super().__init__(client.fs)
@@ -148,10 +148,9 @@ class ArrowGenerator(Generator):
                 # Prefetch would check this before downloading the file.
                 client.check_unchanged(file)
             fs, fs_path = client.fs, file.get_fs_path()
-            # pyarrow reads local files natively, and HTTP servers without range
-            # support need read-ahead blocks.
+            # pyarrow reads local files natively.
             parquet = is_parquet(self.kwargs.get("format"))
-            if parquet and not isinstance(fs, (LocalFileSystem, HTTPFileSystem)):
+            if parquet and not isinstance(fs, LocalFileSystem):
                 fs = PyFileSystem(_PartialReadHandler(client, file))
 
         kwargs = self.kwargs

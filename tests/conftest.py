@@ -1,7 +1,11 @@
+import functools
+import http.server
 import os
 import os.path
 import signal
+import socketserver
 import subprocess  # nosec B404
+import threading
 import uuid
 from collections.abc import Generator
 from datetime import datetime
@@ -1422,3 +1426,25 @@ def fetched_bytes(monkeypatch):
 
         monkeypatch.setattr(cls, "_fetch_range", fetch_range)
     return fetched
+
+
+class _NoRangeHandler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
+
+    def handle_error(self, request, client_address):
+        pass
+
+
+@pytest.fixture
+def http_server_without_ranges(tmp_path):
+    """Serve `tmp_path` over HTTP without range support; yields its base URL."""
+    handler = functools.partial(_NoRangeHandler, directory=str(tmp_path))
+    with socketserver.TCPServer(("127.0.0.1", 0), handler) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield f"http://127.0.0.1:{server.server_address[1]}"
+        finally:
+            server.shutdown()
+            thread.join()

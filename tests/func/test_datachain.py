@@ -1532,12 +1532,8 @@ def test_to_read_parquet_partitioned_remote(cloud_test_catalog_upload):
     assert df_equal(df1, df)
 
 
-@pytest.mark.filterwarnings("ignore:Sending a large body:ResourceWarning")
-@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
-@pytest.mark.parametrize("version_aware", [False], indirect=True)
-def test_read_parquet_columns_fetch_only_those_columns(
-    cloud_test_catalog_upload, fetched_bytes, monkeypatch, tmp_path
-):
+@pytest.fixture
+def download_callbacks(monkeypatch):
     callbacks = []
 
     def download_callback(*args, **kwargs):
@@ -1547,6 +1543,15 @@ def test_read_parquet_columns_fetch_only_those_columns(
     monkeypatch.setattr(
         "datachain.query.dataset.get_download_callback", download_callback
     )
+    return callbacks
+
+
+@pytest.mark.filterwarnings("ignore:Sending a large body:ResourceWarning")
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_read_parquet_columns_fetch_only_those_columns(
+    cloud_test_catalog_upload, fetched_bytes, download_callbacks, tmp_path
+):
     ctc = cloud_test_catalog_upload
     rng = np.random.default_rng(0)
     table = pa.table({f"c{i}": rng.random(50_000) for i in range(10)})
@@ -1561,7 +1566,20 @@ def test_read_parquet_columns_fetch_only_those_columns(
 
     assert values == table["c3"].to_pylist()
     assert 0 < fetched_bytes[0] < local.stat().st_size // 4
-    assert sum(cb.value for cb in callbacks) > 0
+    assert sum(cb.value for cb in download_callbacks) > 0
+
+
+def test_read_parquet_columns_over_http_without_ranges(
+    http_server_without_ranges, download_callbacks, tmp_path, test_session
+):
+    table = pa.table({"value": [1, 2, 3], "other": [4, 5, 6]})
+    pq.write_table(table, tmp_path / "x.parquet")
+    uri = f"{http_server_without_ranges}/x.parquet"
+
+    chain = dc.read_parquet(uri, columns=["value"], session=test_session)
+
+    assert sorted(chain.to_values("value")) == [1, 2, 3]
+    assert sum(cb.value for cb in download_callbacks) > 0
 
 
 def _put_parquet(ctc, tmp_path, name, values):
