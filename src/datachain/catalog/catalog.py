@@ -52,12 +52,7 @@ from datachain.nodes_thread_pool import NodesThreadPool
 from datachain.progress import tqdm
 from datachain.project import Project
 from datachain.sql.types import DateTime, SQLType
-from datachain.utils import (
-    DataChainDir,
-    DatasetIdentifier,
-    interprocess_file_lock,
-    uses_glob,
-)
+from datachain.utils import DataChainDir, DatasetIdentifier, interprocess_file_lock
 
 from .datasource import DataSource
 from .dependency import build_dependency_hierarchy, populate_nested_dependencies
@@ -627,8 +622,6 @@ class Catalog:
             pattern = source[len(base) :].removeprefix("/")
             separator = "/" if list_path and not list_path.endswith("/") else ""
             list_path = list_path + separator + pattern
-            if not uses_glob(source) and not list_path.endswith("/"):
-                list_path += "/"
         list_ds_name = None
         if chain is not None:
             chain._query.resolve_listing()

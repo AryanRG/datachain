@@ -834,7 +834,7 @@ def test_enlist_source_with_glob_in_parent(cloud_test_catalog, update):
         path,
     ):
         assert listing is not None
-        assert path.rstrip("/").endswith("*/dog4")
+        assert path.endswith("*/dog4")
         assert listing_stats(f"{ctc.src_uri}/dogs/", ctc.catalog) == (4, 15)
 
 
@@ -842,7 +842,7 @@ def test_enlist_source_with_glob_in_parent(cloud_test_catalog, update):
 def test_enlist_source_keeps_repeated_slashes(cloud_test_catalog):
     ctc = cloud_test_catalog
     with enlist_source(ctc.catalog, f"{ctc.src_uri}/dogs//*/dog4") as (_, _, path):
-        assert path == "dogs//*/dog4/"
+        assert path == "dogs//*/dog4"
 
 
 def test_grouped_sources_update_shared_snapshot_once(cloud_test_catalog, mocker):
