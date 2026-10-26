@@ -95,16 +95,20 @@ class ThreadProcess:
     def is_alive(self) -> bool:
         return self.thread.is_alive()
 
-    def terminate(self) -> None:
-        self.thread.join()
 
-
-def test_dispatcher_runs_more_batches_than_its_buffer():
+def test_dispatcher_runs_more_batches_than_its_buffer(monkeypatch):
     dispatcher = UDFDispatcher.__new__(UDFDispatcher)
     dispatcher.ctx = SimpleNamespace(Queue=ThreadQueue, Process=ThreadProcess)
     dispatcher.is_batching = False
     dispatcher.buffer_size = 2
     dispatcher.input_batch_size = lambda n_workers: 3
+
+    def join_workers(pool):
+        for worker in pool:
+            worker.thread.join(timeout=5)
+            assert not worker.is_alive()
+
+    monkeypatch.setattr(dispatcher, "_terminate_pool", join_workers)
     seen = []
     catalog = MagicMock()
     catalog.warehouse.clone().dataset_rows_select_from_ids = lambda _, ids, __: ids
