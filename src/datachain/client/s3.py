@@ -139,6 +139,7 @@ class ClientS3(RangeListedClient):
     CREDENTIAL_KEYS = frozenset(
         {"key", "secret", "token", "aws_key", "aws_secret", "aws_token"}
     )
+    PINNED_VERSION_IS_IMMUTABLE = True
     _unversioned = False  # the server can't list versions
 
     @staticmethod

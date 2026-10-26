@@ -816,6 +816,7 @@ def test_get_etag_missing_raises_filenotfound(
         )
 
 
+@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
 def test_put_in_cache_pinned_version_ignores_stale_etag(
     cloud_test_catalog_upload,

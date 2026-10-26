@@ -31,6 +31,7 @@ class GCSClient(RangeListedClient):
     protocol = "gs"
     CREDENTIAL_KEYS = frozenset({"token"})
     LIST_PAGE_SIZE = 5000
+    PINNED_VERSION_IS_IMMUTABLE = True
     # the fields a listing asks for: GCS sends every field otherwise
     LIST_FIELDS = (
         "items(name,size,generation,etag,timeDeleted,updated),nextPageToken,prefixes"

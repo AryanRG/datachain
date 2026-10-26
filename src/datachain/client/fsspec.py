@@ -80,6 +80,8 @@ class Client(ABC):
     # client_config keys this backend treats as credentials.
     CREDENTIAL_KEYS: ClassVar[frozenset[str]] = frozenset()
     LIST_PAGE_SIZE: ClassVar[int] = 1000
+    # whether a version id always names the same content on this backend
+    PINNED_VERSION_IS_IMMUTABLE: ClassVar[bool] = False
 
     @classmethod
     def has_explicit_credentials(cls, client_config: dict | None) -> bool:
@@ -603,10 +605,15 @@ class Client(ABC):
 
     async def _put_in_cache(self, file: "File", *, callback: "Callback" = None) -> None:
         assert not file.location
-        # A version-aware client downloads the pinned version, whose content can't
-        # change while its etag can: GCS changes it on metadata-only updates such as
-        # a storage class change.
-        if file.etag and not (file.version and self._is_version_aware()):
+        # A version-aware client downloads the pinned version. Where that version's
+        # content can't change, its etag still can: GCS changes it on metadata-only
+        # updates such as a storage class change.
+        pinned = (
+            file.version
+            and self.PINNED_VERSION_IS_IMMUTABLE
+            and self._is_version_aware()
+        )
+        if file.etag and not pinned:
             etag = await self.get_current_etag(file)
             if file.etag != etag:
                 raise FileNotFoundError(
