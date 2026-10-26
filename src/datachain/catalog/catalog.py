@@ -601,6 +601,7 @@ class Catalog:
         source = os.fspath(source)
         if issubclass(Client.get_implementation(source), FileClient):
             # Local paths follow the filesystem parser; cloud tree keys stay raw.
+            FileClient.validate_source(source)
             storage_uri, path = Client.parse_url(source)
             source = f"{storage_uri}/{path}"
         client_config = self.client_config if client_config is None else client_config

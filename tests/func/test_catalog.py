@@ -946,3 +946,9 @@ def test_enlist_source_normalizes_local_glob_path(
     with enlist_source(ctc.catalog, f"{root}/d*//others/") as (listing, _, path):
         assert listing is not None
         assert path == "d*/others/"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="drive letters exist only on Windows")
+def test_catalog_ls_rejects_file_uri_without_drive(catalog):
+    with pytest.raises(ValueError, match="drive letter"):
+        list(catalog.ls(["file:///data/dogs/"], fields=["name"]))
