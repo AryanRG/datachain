@@ -255,19 +255,22 @@ def test_calc_fingerprint_changes_when_version_stops_being_latest(test_session):
     assert fp1 != fp2
 
 
+@pytest.mark.parametrize(
+    "tree", [{"deleted": {"gone": "one", "kept": "two"}}], indirect=True
+)
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
 def test_listing_update_drops_deleted_file_on_versioned_storage(cloud_test_catalog):
     ctc = cloud_test_catalog
-    uri = f"{ctc.src_uri}/dogs/"
+    uri = f"{ctc.src_uri}/deleted/"
     dc.read_storage(uri, session=ctc.session).exec()
 
     client = ctc.catalog.get_client(ctc.src_uri)
-    client.fs.rm(client.get_uri("dogs/dog1"))
+    client.fs.rm(client.get_uri("deleted/gone"))
 
     paths = dc.read_storage(uri, session=ctc.session, update=True).to_values(
         "file.path"
     )
-    assert "dogs/dog1" not in paths
+    assert paths == ["deleted/kept"]
 
 
 def test_read_storage_single_local_file_deterministic_hash(test_session, tmp_dir):
