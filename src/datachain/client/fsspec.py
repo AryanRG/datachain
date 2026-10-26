@@ -80,7 +80,9 @@ class Client(ABC):
     # client_config keys this backend treats as credentials.
     CREDENTIAL_KEYS: ClassVar[frozenset[str]] = frozenset()
     LIST_PAGE_SIZE: ClassVar[int] = 1000
-    # whether a version id always names the same content on this backend
+    # True when a pinned version id always returns the same bytes, so
+    # _put_in_cache can skip the etag check. A wrong True silently serves changed
+    # bytes: set it only where versions are immutable and reads honor the id.
     PINNED_VERSION_IS_IMMUTABLE: ClassVar[bool] = False
 
     @classmethod

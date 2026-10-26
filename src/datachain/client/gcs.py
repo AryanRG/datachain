@@ -31,6 +31,8 @@ class GCSClient(RangeListedClient):
     protocol = "gs"
     CREDENTIAL_KEYS = frozenset({"token"})
     LIST_PAGE_SIZE = 5000
+    # a generation's bytes never change; metadata edits (storage class, custom
+    # metadata) bump only the metageneration and the etag
     PINNED_VERSION_IS_IMMUTABLE = True
     # the fields a listing asks for: GCS sends every field otherwise
     LIST_FIELDS = (

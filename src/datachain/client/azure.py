@@ -49,6 +49,9 @@ class AzureClient(RangeListedClient):
     PREFIX = "az://"
     protocol = "az"
     LIST_PAGE_SIZE = 5000
+    # Put Page and Append Block change page and append blobs in place without
+    # a new version id, so a pinned download can return different bytes
+    PINNED_VERSION_IS_IMMUTABLE = False
     CREDENTIAL_KEYS = frozenset(
         {
             "account_key",
