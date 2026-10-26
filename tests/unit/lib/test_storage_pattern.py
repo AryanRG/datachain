@@ -218,4 +218,5 @@ def test_list_scope(list_path, pattern, recursive, scope):
     ],
 )
 def test_glob_base_keeps_directory_boundary(uri, base):
+    # URI splitting only, not filtering of keys with empty segments.
     assert split_uri_pattern(uri) == (base, "*.jpg")

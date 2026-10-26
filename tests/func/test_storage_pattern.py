@@ -1,6 +1,8 @@
 import pytest
 
 import datachain as dc
+from datachain.lib.dc import storage
+from datachain.lib.listing import get_listing
 from tests.utils import instantiate_tree
 
 DEEP_TREE = {
@@ -345,37 +347,79 @@ def test_read_special_chars_prefix_after_parent_listed(tmp_dir):
 
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
-@pytest.mark.parametrize("version_aware", [False], indirect=True)
 @pytest.mark.parametrize(
     "tree",
-    [{"photos": "shadow", "photos/a.jpg": "jpg", "photos/b.png": "png"}],
+    [
+        {
+            "photos": "shadow",
+            "photos/a.jpg": "jpg",
+            "photos/b.png": "png",
+            "x.jpg": "file",
+        }
+    ],
     indirect=True,
 )
-@pytest.mark.parametrize("cached", [False, True])
-@pytest.mark.parametrize("reader", ["read_storage", "list_storage", "save", "catalog"])
-def test_glob_base_is_directory_when_object_has_same_name(
-    cloud_test_catalog, cached, reader
-):
-    ctc = cloud_test_catalog
-    if cached:
-        dc.read_storage(f"{ctc.src_uri}/", session=ctc.session).exec()
-    uri = f"{ctc.src_uri}/photos/*.jpg"
-    if reader == "catalog":
+class TestGlobBaseWithSameNamedObject:
+    @pytest.fixture(params=[False, True], ids=["fresh", "cached-parent"])
+    def listing_source(self, cloud_test_catalog, request):
+        if request.param:
+            dc.read_storage(
+                f"{cloud_test_catalog.src_uri}/", session=cloud_test_catalog.session
+            ).exec()
+        _, _, _, reused = get_listing(
+            f"{cloud_test_catalog.src_uri}/photos/", cloud_test_catalog.session
+        )
+        assert reused is request.param
+        return cloud_test_catalog
+
+    def test_read_storage(self, listing_source, mocker):
+        ctc = listing_source
+        expected = get_listing(f"{ctc.src_uri}/photos/", ctc.session)
+        selected = mocker.spy(storage, "get_listing")
+        paths = dc.read_storage(
+            f"{ctc.src_uri}/photos/*.jpg", session=ctc.session
+        ).to_values("file.path")
+        assert paths == ["photos/a.jpg"]
+        assert selected.spy_return[0] == expected[0]
+        assert selected.spy_return[3] == expected[3]
+
+    def test_list_storage(self, listing_source):
+        ctc = listing_source
+        rows = dc.list_storage(f"{ctc.src_uri}/photos/*.jpg", session=ctc.session)
+        assert [row.path for row in rows] == ["photos/a.jpg"]
+
+    def test_save(self, listing_source):
+        ctc = listing_source
+        chain = dc.list_storage(
+            f"{ctc.src_uri}/photos/*.jpg", session=ctc.session
+        ).save()
+        assert chain.to_values("file.path") == ["photos/a.jpg"]
+
+    def test_catalog(self, listing_source, mocker):
+        ctc = listing_source
+        expected = get_listing(f"{ctc.src_uri}/photos/", ctc.session)
+        selected = mocker.spy(storage, "get_listing")
         names = [
-            row[0] for _, rows in ctc.catalog.ls([uri], fields=["name"]) for row in rows
+            row[0]
+            for _, rows in ctc.catalog.ls(
+                [f"{ctc.src_uri}/photos/*.jpg"], fields=["name"]
+            )
+            for row in rows
         ]
         assert names == ["a.jpg"]
-        return
-    if reader == "list_storage":
-        paths = [row.path for row in dc.list_storage(uri, session=ctc.session)]
-    else:
-        chain = (
-            dc.read_storage(uri, session=ctc.session)
-            if reader == "read_storage"
-            else dc.list_storage(uri, session=ctc.session).save()
-        )
-        paths = chain.to_values("file.path")
-    assert paths == ["photos/a.jpg"]
-    assert dc.read_storage(f"{ctc.src_uri}/photos", session=ctc.session).to_values(
-        "file.path"
-    ) == ["photos"]
+        assert selected.spy_return[0] == expected[0]
+        assert selected.spy_return[3] == expected[3]
+
+    def test_direct_object_read(self, cloud_test_catalog):
+        ctc = cloud_test_catalog
+        dc.read_storage(f"{ctc.src_uri}/photos/*.jpg", session=ctc.session).exec()
+        assert dc.read_storage(f"{ctc.src_uri}/photos", session=ctc.session).to_values(
+            "file.path"
+        ) == ["photos"]
+
+    def test_glob_under_file_only_key(self, cloud_test_catalog):
+        ctc = cloud_test_catalog
+        with pytest.raises(FileNotFoundError):
+            dc.read_storage(f"{ctc.src_uri}/x.jpg/*", session=ctc.session).to_values(
+                "file.path"
+            )
