@@ -2,6 +2,7 @@ import posixpath
 import random
 import sqlite3
 from contextlib import closing
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import true
@@ -30,7 +31,7 @@ from datachain.lib.listing import (
     select_paths,
 )
 from datachain.listing import SavedListing
-from datachain.node import DirType
+from datachain.node import DirType, Node
 from datachain.sql.functions import path as pathfunc
 from datachain.utils import uses_glob
 from tests.utils import skip_if_not_sqlite
@@ -284,6 +285,87 @@ def test_subtree(listing):
 def test_subdirs(listing):
     dirs = list(listing.get_dirs_by_parent_path(""))
     _match_filenames(dirs, ["dir1", "dir2"])
+
+
+@pytest.mark.parametrize("column", ["file", "document"])
+@pytest.mark.parametrize(
+    "location",
+    [None, {}, [], {"vtype": "tar", "offset": 128}, [{"vtype": "tar", "offset": 128}]],
+)
+def test_saved_nodes_preserve_file_metadata(test_session, column, location):
+    file = File(
+        source="s3://bucket",
+        path="folder/a.txt",
+        size=123,
+        version="version-1",
+        etag="etag-1",
+        last_modified=datetime(2026, 10, 23, 1, 2, 3, tzinfo=UTC),
+        location=location,
+    )
+    chain = dc.read_values(session=test_session, **{column: [file]}).save("nodes")
+    catalog = test_session.catalog
+    dataset = chain.dataset
+    rows = catalog.warehouse.dataset_rows(
+        dataset, dataset.latest_version, column=column
+    )
+    expected_identity = chain.settings(sys=True).to_list("sys.id", "sys.rand")[0]
+    nodes = [
+        catalog.warehouse.get_node_by_path(rows, file.path),
+        *catalog.warehouse.expand_path(rows, "folder/*.txt"),
+        *catalog.warehouse.expand_path(rows, "*/a.txt"),
+        *(n.n for n in catalog.warehouse.get_subtree_files(rows, Node.root())),
+    ]
+
+    assert len(nodes) == 4
+    for node in nodes:
+        assert node.to_file() == file
+        assert node.location == location
+        assert (node.sys__id, node.sys__rand) == expected_identity
+        assert node.dir_type == DirType.FILE
+
+
+@pytest.mark.parametrize(
+    "pattern,path,dir_type",
+    [
+        ("dir*/d2", "dir1/d2", DirType.DIR),
+        ("dir*/d2/", "dir1/d2", DirType.DIR),
+        ("dir*/d2/file1.csv", "dir1/d2/file1.csv", DirType.FILE),
+        ("dir*/diagram.png", "dir2/diagram.png", DirType.FILE),
+    ],
+)
+def test_exact_path_after_glob(listing, pattern, path, dir_type):
+    nodes = listing.expand_path(pattern)
+
+    assert len(nodes) == 1
+    assert nodes[0].path == path
+    assert nodes[0].dir_type == dir_type
+    assert nodes[0].is_dir == (dir_type == DirType.DIR)
+
+
+@pytest.mark.parametrize(
+    "pattern", ["dir*/missing.txt", "dir*/missing/a.txt", "missing.txt"]
+)
+def test_missing_exact_path(listing, pattern):
+    with pytest.raises(FileNotFoundError, match="Unable to resolve path"):
+        listing.warehouse.expand_path(listing.dataset_rows, pattern)
+
+
+def test_exact_path_after_glob_matches_multiple_directories(test_session):
+    chain = dc.read_values(
+        session=test_session,
+        file=[File(path=path) for path in ("one/a.txt", "two/a.txt", "other/b.txt")],
+    ).save("nodes")
+    dataset = chain.dataset
+    warehouse = test_session.catalog.warehouse
+    rows = warehouse.dataset_rows(dataset, dataset.latest_version)
+
+    nodes = warehouse.expand_path(rows, "*/a.txt")
+
+    assert {node.path for node in nodes} == {"one/a.txt", "two/a.txt"}
+
+
+def test_exact_path_after_glob_with_no_parent_matches(listing):
+    assert listing.expand_path("missing*/a.txt") == []
 
 
 @pytest.mark.parametrize(
