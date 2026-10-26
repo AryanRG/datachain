@@ -12,7 +12,7 @@ from datetime import datetime
 from functools import partial
 from io import BytesIO
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple
 from urllib.parse import urlparse
 
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
@@ -44,6 +44,15 @@ sha256 = partial(hashlib.sha256, usedforsecurity=False)
 logger = logging.getLogger("datachain")
 
 _SOURCE_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+
+
+_FILE_STATE = {
+    "_catalog": None,
+    "_caching_enabled": False,
+    "_download_cb": DEFAULT_CALLBACK,
+    "_fs_path_cache": None,
+}
+
 
 # how to create file path when exporting
 ExportPlacement = Literal["filename", "etag", "fullpath", "checksum", "filepath"]
@@ -327,10 +336,19 @@ class File(DataModel):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._catalog = None
-        self._caching_enabled: bool = False
-        self._download_cb: Callback = DEFAULT_CALLBACK
-        self._fs_path_cache: tuple[str, str, str] | None = None
+        # Annotations only: in the class body the pydantic mypy plugin would take
+        # them for fields.
+        self._caching_enabled: bool
+        self._download_cb: Callback
+        self._fs_path_cache: tuple[str, str, str] | None
+        # The runtime state, set in one __dict__ update: pydantic's __setattr__ per
+        # attribute is slow when millions of Files are built. A subclass that
+        # declares them as private attributes needs pydantic's setattr instead.
+        if _FILE_STATE.keys() & self.__private_attributes__.keys():
+            for name, value in _FILE_STATE.items():
+                setattr(self, name, value)
+        else:
+            self.__dict__.update(_FILE_STATE)
 
     def __getstate__(self):
         state = super().__getstate__()
@@ -1143,6 +1161,49 @@ class File(DataModel):
             ```
         """
         return rebase_path(self.get_fs_path(), old_base, new_base, suffix, extension)
+
+
+class FileRow(NamedTuple):
+    """A ``File`` as its flat columns, in DB order. Range listings yield these and
+    they go to the DB as they are, so ``File``'s validators don't run on them: the
+    listing clients make valid rows (a scheme in ``source``, no ``location``)."""
+
+    source: str
+    path: str
+    size: int = 0
+    version: str = ""
+    etag: str = ""
+    is_latest: bool = True
+    last_modified: datetime = TIME_ZERO
+    location: dict | list[dict] | None = None
+
+    # File's path helpers, which read only ``path``: no File is built
+    @property
+    def name(self) -> str:
+        return PurePosixPath(self.path).name
+
+    @property
+    def parent(self) -> str:
+        return str(PurePosixPath(self.path).parent)
+
+    def get_file_suffix(self) -> str:
+        return PurePosixPath(self.path).suffix
+
+    def get_file_ext(self) -> str:
+        return PurePosixPath(self.path).suffix.lstrip(".")
+
+    def get_file_stem(self) -> str:
+        return PurePosixPath(self.path).stem
+
+    # File's helpers that need a File: one is built from the row
+    def get_fs_path(self) -> str:
+        return File(**self._asdict()).get_fs_path()
+
+    def get_hash(self) -> str:
+        return File(**self._asdict()).get_hash()
+
+    def rebase(self, *args, **kwargs) -> str:
+        return File(**self._asdict()).rebase(*args, **kwargs)
 
 
 class TextFile(File):
