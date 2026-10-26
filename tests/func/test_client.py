@@ -816,6 +816,50 @@ def test_get_etag_missing_raises_filenotfound(
         )
 
 
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_put_in_cache_pinned_version_ignores_stale_etag(
+    cloud_test_catalog_upload,
+    cloud_type,
+    version_aware,
+):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+
+    rel_path = f"client-put-in-cache/{uuid4().hex}.bin"
+    uploaded_v1 = client.upload(b"v1", rel_path)
+    client.upload(b"version-2", rel_path)
+
+    file = File(
+        source=ctc.src_uri,
+        path=rel_path,
+        version=uploaded_v1.version,
+        etag="stale-etag",
+        size=2,
+    )
+    client.put_in_cache(file)
+
+    assert Path(ctc.catalog.cache.get_path(file)).read_bytes() == b"v1"
+
+
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_put_in_cache_unpinned_stale_etag_raises(
+    cloud_test_catalog_upload,
+    cloud_type,
+    version_aware,
+):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+
+    rel_path = f"client-put-in-cache/{uuid4().hex}.bin"
+    client.upload(b"v1", rel_path)
+
+    file = File(source=ctc.src_uri, path=rel_path, etag="stale-etag", size=2)
+    with pytest.raises(FileNotFoundError, match="changed on the source"):
+        client.put_in_cache(file)
+
+    assert not ctc.catalog.cache.contains(file)
+
+
 _xfail_special_char_versioned = pytest.mark.xfail(
     reason="versioned keys containing '#' or '?' are not supported on this backend",
     strict=False,

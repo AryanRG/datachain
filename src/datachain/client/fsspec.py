@@ -603,7 +603,10 @@ class Client(ABC):
 
     async def _put_in_cache(self, file: "File", *, callback: "Callback" = None) -> None:
         assert not file.location
-        if file.etag:
+        # A version-aware client downloads the pinned version, whose content can't
+        # change while its etag can: GCS changes it on metadata-only updates such as
+        # a storage class change.
+        if file.etag and not (file.version and self._is_version_aware()):
             etag = await self.get_current_etag(file)
             if file.etag != etag:
                 raise FileNotFoundError(
