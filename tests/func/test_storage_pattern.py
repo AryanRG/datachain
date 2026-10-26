@@ -271,7 +271,7 @@ def test_hugging_face_glob_patterns():
     assert pattern is None
 
     base, pattern = split_uri_pattern("hf://datasets/username/repo-name/data/*.txt")
-    assert base == "hf://datasets/username/repo-name/data"
+    assert base == "hf://datasets/username/repo-name/data/"
     assert pattern == "*.txt"
 
     with pytest.raises(
@@ -342,3 +342,40 @@ def test_read_special_chars_prefix_after_parent_listed(tmp_dir):
     assert dc.read_storage(f"{tmp_dir}/").count() == count_dict_items(DEEP_TREE) + 1
     files = dc.read_storage(f"{special}/").to_values("file")
     assert [f.name for f in files] == ["file"]
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize(
+    "tree",
+    [{"photos": "shadow", "photos/a.jpg": "jpg", "photos/b.png": "png"}],
+    indirect=True,
+)
+@pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize("reader", ["read_storage", "list_storage", "save", "catalog"])
+def test_glob_base_is_directory_when_object_has_same_name(
+    cloud_test_catalog, cached, reader
+):
+    ctc = cloud_test_catalog
+    if cached:
+        dc.read_storage(f"{ctc.src_uri}/", session=ctc.session).exec()
+    uri = f"{ctc.src_uri}/photos/*.jpg"
+    if reader == "catalog":
+        names = [
+            row[0] for _, rows in ctc.catalog.ls([uri], fields=["name"]) for row in rows
+        ]
+        assert names == ["a.jpg"]
+        return
+    if reader == "list_storage":
+        paths = [row.path for row in dc.list_storage(uri, session=ctc.session)]
+    else:
+        chain = (
+            dc.read_storage(uri, session=ctc.session)
+            if reader == "read_storage"
+            else dc.list_storage(uri, session=ctc.session).save()
+        )
+        paths = chain.to_values("file.path")
+    assert paths == ["photos/a.jpg"]
+    assert dc.read_storage(f"{ctc.src_uri}/photos", session=ctc.session).to_values(
+        "file.path"
+    ) == ["photos"]
