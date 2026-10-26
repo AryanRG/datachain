@@ -7,7 +7,9 @@ import pytest
 import requests
 
 import datachain as dc
+import datachain.lib.listing as listing_lib
 from datachain.cli import garbage_collect
+from datachain.client import Client
 from datachain.error import DatasetNotFoundError
 from datachain.lib.listing import parse_listing_uri
 from tests.data import ENTRIES
@@ -773,3 +775,174 @@ def test_signed_url_with_anon_client(cloud_test_catalog, cloud_type):
     )
     param = "rscd" if cloud_type == "azure" else "response-content-disposition"
     assert param not in signed_url
+
+
+def test_enlist_source_selects_snapshot_once(cloud_test_catalog, mocker):
+    ctc = cloud_test_catalog
+    select = mocker.spy(listing_lib, "describe_listing")
+    with enlist_source(ctc.catalog, f"{ctc.src_uri}/dogs/") as (listing, _, _):
+        assert listing is not None
+        assert listing_stats(f"{ctc.src_uri}/dogs/", ctc.catalog) == (4, 15)
+    assert select.call_count == 1
+
+
+@pytest.mark.parametrize("patterns", [("", ""), ("dog?", "dog*")])
+def test_enlist_sources_updates_shared_snapshot_once(
+    cloud_test_catalog, mocker, patterns
+):
+    ctc = cloud_test_catalog
+    uri = f"{ctc.src_uri}/dogs/"
+    write = mocker.spy(dc.lib.dc.storage, "_write_listing")
+    with ctc.catalog.enlist_sources(
+        [uri + pattern for pattern in patterns], update=True
+    ) as sources:
+        assert sources is not None
+        half = len(sources) // 2
+        assert half == (1 if patterns == ("", "") else 3)
+        assert [s.node for s in sources[:half]] == [s.node for s in sources[half:]]
+    assert write.call_count == 1
+
+
+def test_enlist_source_client_config_override(cloud_test_catalog, mocker):
+    ctc = cloud_test_catalog
+    config = ctc.client_config.copy()
+    original = {"endpoint_url": "http://127.0.0.1:1", "anon": True}
+    ctc.catalog.client_config = original.copy()
+    clients = mocker.spy(dc.lib.dc.storage.Client, "get_client")
+    with enlist_source(ctc.catalog, f"{ctc.src_uri}/dogs/", client_config=config) as (
+        listing,
+        client,
+        _,
+    ):
+        assert listing is not None
+        assert listing_stats(f"{ctc.src_uri}/dogs/", ctc.catalog) == (4, 15)
+        assert client is listing.client
+    assert clients.call_args_list
+    assert all(
+        c.kwargs.get("endpoint_url") != original["endpoint_url"]
+        for c in clients.call_args_list
+    )
+    assert ctc.catalog.client_config == original
+
+
+@pytest.mark.parametrize("update", [False, True])
+def test_enlist_source_with_glob_in_parent(cloud_test_catalog, update):
+    ctc = cloud_test_catalog
+    with enlist_source(ctc.catalog, f"{ctc.src_uri}/dogs/*/dog4", update=update) as (
+        listing,
+        _,
+        path,
+    ):
+        assert listing is not None
+        assert path.rstrip("/").endswith("*/dog4")
+        assert listing_stats(f"{ctc.src_uri}/dogs/", ctc.catalog) == (4, 15)
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+def test_enlist_source_keeps_repeated_slashes(cloud_test_catalog):
+    ctc = cloud_test_catalog
+    with enlist_source(ctc.catalog, f"{ctc.src_uri}/dogs//*/dog4") as (_, _, path):
+        assert path == "dogs//*/dog4/"
+
+
+def test_grouped_sources_update_shared_snapshot_once(cloud_test_catalog, mocker):
+    ctc = cloud_test_catalog
+    uri = f"{ctc.src_uri}/dogs/"
+    write = mocker.spy(dc.lib.dc.storage, "_write_listing")
+    groups = ctc.catalog.enlist_sources_grouped([uri, uri], update=True)
+    try:
+        assert len(groups) == 2
+        assert write.call_count == 1
+    finally:
+        for group in groups:
+            group.close()
+
+
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize(
+    "tree", [{"dir": {"a{b": "one", "sub{1": {"f": "two"}}}], indirect=True
+)
+@pytest.mark.parametrize("name,content", [("a{b", "one"), ("sub{1/f", "two")])
+@pytest.mark.parametrize("operation", ["ls", "cp"])
+def test_catalog_literal_brace_object(
+    cloud_test_catalog, tmp_path, name, content, operation
+):
+    ctc = cloud_test_catalog
+    uri = f"{ctc.src_uri}/dir/{name}"
+    if operation == "ls":
+        rows = [list(rows) for _, rows in ctc.catalog.ls([uri], fields=["name"])]
+        assert rows == [[(name.rsplit("/", 1)[-1],)]]
+    else:
+        output = tmp_path / "downloaded"
+        ctc.catalog.cp([uri], str(output))
+        assert output.read_text() == content
+
+
+def test_catalog_update_with_glob_directory(cloud_test_catalog):
+    ctc = cloud_test_catalog
+    groups = [
+        (source.node.name, list(rows))
+        for source, rows in ctc.catalog.ls(
+            [f"{ctc.src_uri}/dogs/*/"], fields=["name"], update=True
+        )
+    ]
+    assert groups == [("others", [("dog4",)])]
+
+
+@pytest.mark.parametrize("cloud_type", ["file"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize("config", [None, {}], ids=["inherit", "empty"])
+@pytest.mark.parametrize("operation", ["ls", "du", "find", "index", "cp", "clone"])
+def test_catalog_client_config_empty_or_inherited(
+    cloud_test_catalog, tmp_path, mocker, operation, config
+):
+    ctc = cloud_test_catalog
+    original = {"use_symlinks": True}
+    ctc.catalog.client_config = original.copy()
+    clients = mocker.spy(Client, "get_client")
+    other = ctc.catalog.copy()
+    other.client_config = {}
+    with dc.Session("other", catalog=other):
+        uri = f"{ctc.src_uri}/dogs/"
+        if operation == "ls":
+            for _, rows in ctc.catalog.ls([uri], fields=["name"], client_config=config):
+                assert list(rows)
+        elif operation == "index":
+            ctc.catalog.index([uri], client_config=config)
+        elif operation == "cp":
+            output = tmp_path / "downloaded"
+            ctc.catalog.cp([f"{uri}dog1"], str(output), client_config=config)
+            assert output.read_text() == DEFAULT_TREE["dogs"]["dog1"]
+            assert output.is_symlink() == (config is None)
+        elif operation == "clone":
+            ctc.catalog.clone(
+                [uri], "config_clone", no_cp=True, recursive=True, client_config=config
+            )
+        else:
+            assert list(getattr(ctc.catalog, operation)([uri], client_config=config))
+    assert clients.call_args_list
+    assert all(
+        bool(call.kwargs.get("use_symlinks")) == (config is None)
+        for call in clients.call_args_list
+    )
+    assert ctc.catalog.client_config == original
+    assert other.client_config == {}
+
+
+@pytest.mark.parametrize("cloud_type", ["file"], indirect=True)
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+@pytest.mark.parametrize("form", ["uri", "absolute", "relative"])
+def test_enlist_source_normalizes_local_glob_path(
+    cloud_test_catalog, monkeypatch, form
+):
+    ctc = cloud_test_catalog
+    if form == "uri":
+        root = ctc.src_uri
+    elif form == "absolute":
+        root = os.fspath(ctc.src)
+    else:
+        monkeypatch.chdir(ctc.src.parent)
+        root = ctc.src.name
+    with enlist_source(ctc.catalog, f"{root}/d*//others/") as (listing, _, path):
+        assert listing is not None
+        assert path == "d*/others/"

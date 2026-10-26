@@ -505,3 +505,13 @@ def test_brace_alternatives_of_one_folder_list_it_once(cloud_test_catalog, mocke
 
     assert paths == [f"{prefix}/a.jpg", f"{prefix}/b.png", f"{prefix}/c.gif"]
     assert level.call_count == 1  # one scan for the three alternatives
+
+
+def test_empty_client_config_replaces_session_config(test_session, tmp_dir):
+    test_session.catalog.client_config = {"endpoint_url": "https://session.example"}
+    listing = dc.list_storage(tmp_dir, session=test_session, client_config={})
+    assert listing.client_config == {}
+    assert listing.session.catalog.client_config == {}
+    assert test_session.catalog.client_config == {
+        "endpoint_url": "https://session.example"
+    }

@@ -254,7 +254,7 @@ def _client_configs(
         anon = True
     if anon is not None:
         config = config | {"anon": anon}
-    session_config = config if client_config or anon is not None else None
+    session_config = config if client_config is not None or anon is not None else None
     if not versions:
         config = config | {"version_aware": False}
     return session_config, config
@@ -276,10 +276,76 @@ def _session_for(
 
 def _session_client_config(session: Session | None, client_config: dict | None) -> dict:
     """``client_config`` if given, else the session's, without creating one."""
-    if client_config:
+    if client_config is not None:
         return client_config
     session = session or Session.active()
     return session.catalog.client_config if session else {}
+
+
+def _read_storage_source(
+    uri: str | os.PathLike[str],
+    session: Session,
+    client_config: dict,
+    refreshed: set[str],
+    *,
+    file_type: type[File] = File,
+    column: str = "file",
+    update: bool = False,
+    versions: bool = True,
+    settings: dict | None = None,
+    in_memory: bool = False,
+    delta: bool | None = False,
+    delta_on: str | Sequence[str] | None = None,
+    delta_result_on: str | Sequence[str] | None = None,
+    delta_compare: str | Sequence[str] | None = None,
+    delta_retry: bool | str | None = None,
+    delta_unsafe: bool = False,
+) -> tuple["DataChain | None", str, str]:
+    """Select a snapshot and attach its full-prefix refresh, without reading rows.
+
+    A single file has no snapshot. The URI and path are kept from this selection
+    so Catalog can browse the same snapshot without selecting it again.
+    """
+    from .datasets import read_dataset
+
+    name, list_uri, list_path, _ = get_listing(
+        uri, session, update=update, versions=versions
+    )
+    if name is None:
+        return None, list_uri, list_path
+
+    catalog = session.catalog
+    chain = read_dataset(
+        name,
+        namespace=catalog.metastore.system_namespace_name,
+        project=catalog.metastore.listing_project_name,
+        session=session,
+        settings=settings,
+        delta=delta,
+        delta_on=delta_on,
+        delta_result_on=delta_result_on,
+        delta_compare=delta_compare,
+        delta_retry=delta_retry,
+        delta_unsafe=delta_unsafe,
+    )
+    # A snapshot shared by several URIs is refreshed once per operation.
+    chain._query.update = update and name not in refreshed
+    refreshed.add(name)
+    chain.signals_schema = chain.signals_schema.mutate({column: file_type})
+    # A reused snapshot can cover a parent: always refresh its whole prefix.
+    chain._query.set_listing_fn(
+        lambda: _write_listing(
+            listing_uri_from_name(name),
+            name,
+            session,
+            client_config,
+            column=column,
+            file_type=file_type,
+            settings=settings,
+            in_memory=in_memory,
+        )
+    )
+    return chain, list_uri, list_path
 
 
 def _read_storage(
@@ -301,38 +367,26 @@ def _read_storage(
     delta_retry: bool | str | None = None,
     delta_unsafe: bool = False,
 ) -> "DataChain":
-    from .datasets import read_dataset
     from .records import read_records
 
     file_type = get_file_type(type)
-    catalog = session.catalog
-    cache = catalog.cache
-    listing_namespace_name = catalog.metastore.system_namespace_name
-    listing_project_name = catalog.metastore.listing_project_name
-
+    cache = session.catalog.cache
     chains = []
     file_values = []
     updated_listings: set[str] = set()
 
     for list_uri_to_use, glob_pattern in storage_sources(uris):
-        list_ds_name, list_uri, list_path, _ = get_listing(
-            list_uri_to_use, session, update=update, versions=versions
-        )
-
-        # list_ds_name is None if object is a file, we don't want to use cache
-        # or do listing in that case - just read that single object
-        if not list_ds_name:
-            file_values.append(
-                get_file_info(list_uri, cache, client_config=client_config)
-            )
-            continue
-
-        dc = read_dataset(
-            list_ds_name,
-            namespace=listing_namespace_name,
-            project=listing_project_name,
-            session=session,
+        dc, list_uri, list_path = _read_storage_source(
+            list_uri_to_use,
+            session,
+            client_config,
+            updated_listings,
+            file_type=file_type,
+            column=column,
+            update=update,
+            versions=versions,
             settings=settings,
+            in_memory=in_memory,
             delta=delta,
             delta_on=delta_on,
             delta_result_on=delta_result_on,
@@ -340,25 +394,11 @@ def _read_storage(
             delta_retry=delta_retry,
             delta_unsafe=delta_unsafe,
         )
-        # a listing shared by several URIs is refreshed once, so all read one snapshot
-        dc._query.update = update and list_ds_name not in updated_listings
-        updated_listings.add(list_ds_name)
-        dc.signals_schema = dc.signals_schema.mutate({f"{column}": file_type})
-
-        # Always attach listing_fn so resolve_listing can refresh stale listings;
-        # a reused snapshot may cover a parent of list_uri: refresh all of it
-        dc._query.set_listing_fn(
-            lambda ds_name=list_ds_name: _write_listing(
-                listing_uri_from_name(ds_name),
-                ds_name,
-                session,
-                client_config,
-                column=column,
-                file_type=file_type,
-                settings=settings,
-                in_memory=in_memory,
+        if dc is None:
+            file_values.append(
+                get_file_info(list_uri, cache, client_config=client_config)
             )
-        )
+            continue
 
         chains.append(
             select_paths(dc, path_filter(list_path, glob_pattern, recursive), column)

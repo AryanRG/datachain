@@ -1,3 +1,4 @@
+import glob
 import io
 import logging
 import os
@@ -51,7 +52,12 @@ from datachain.nodes_thread_pool import NodesThreadPool
 from datachain.progress import tqdm
 from datachain.project import Project
 from datachain.sql.types import DateTime, SQLType
-from datachain.utils import DataChainDir, DatasetIdentifier, interprocess_file_lock
+from datachain.utils import (
+    DataChainDir,
+    DatasetIdentifier,
+    interprocess_file_lock,
+    uses_glob,
+)
 
 from .datasource import DataSource
 from .dependency import build_dependency_hierarchy, populate_nested_dependencies
@@ -585,17 +591,51 @@ class Catalog:
         client_config=None,
         column="file",
         skip_indexing=False,
+        *,
+        _updated_listings: set[str] | None = None,
     ) -> tuple["SavedListing | None", Client, str]:
-        from datachain import read_storage
+        from datachain.client.local import FileClient
+        from datachain.lib.dc.storage import (
+            _client_configs,
+            _read_storage_source,
+            _session_for,
+        )
+        from datachain.lib.dc.storage_pattern import split_uri_pattern
         from datachain.listing import SavedListing
 
-        read_storage(source, session=self.session, update=update, column=column).exec()
-
-        list_ds_name, list_uri, list_path, _ = get_listing(
-            source, self.session, update=update
+        source = os.fspath(source)
+        if issubclass(Client.get_implementation(source), FileClient):
+            # Local paths follow the filesystem parser; cloud tree keys stay raw.
+            storage_uri, path = Client.parse_url(source)
+            source = f"{storage_uri}/{path}"
+        client_config = self.client_config if client_config is None else client_config
+        session_config, config = _client_configs(
+            [source], self.session, None, client_config, True
         )
+        session = _session_for(self.session, session_config, False)
+        # Braces are not tree globs: a name with "{" may be an object.
+        source_uri, pattern = (
+            split_uri_pattern(source) if glob.has_magic(source) else (source, None)
+        )
+        refreshed = set() if _updated_listings is None else _updated_listings
+        chain, list_uri, list_path = _read_storage_source(
+            source_uri, session, config, refreshed, update=update, column=column
+        )
+        if pattern is not None:
+            # Keep empty path segments in the tree selection (e.g. dir//*/x).
+            base = source_uri.rstrip("/")
+            pattern = source[len(base) :].removeprefix("/")
+            separator = "/" if list_path and not list_path.endswith("/") else ""
+            list_path = list_path + separator + pattern
+            if not uses_glob(source) and not list_path.endswith("/"):
+                list_path += "/"
+        list_ds_name = None
+        if chain is not None:
+            chain._query.resolve_listing()
+            list_ds_name = chain._query.list_ds_name
+
         lst = None
-        client = Client.get_client(list_uri, self.cache, **self.client_config)
+        client = Client.get_client(list_uri, self.cache, **config)
 
         if list_ds_name:
             lst = SavedListing(
@@ -616,15 +656,19 @@ class Catalog:
         skip_indexing=False,
         client_config=None,
         only_index=False,
+        *,
+        _updated_listings: set[str] | None = None,
     ) -> Iterator[list["DataSource"] | None]:
         enlisted_sources: list[tuple[SavedListing | None, Client, str]] = []
+        updated_listings = set() if _updated_listings is None else _updated_listings
         try:
             for src in sources:  # Opt: parallel
                 listing, client, file_path = self.enlist_source(
                     src,
                     update,
-                    client_config=client_config or self.client_config,
+                    client_config=client_config,
                     skip_indexing=skip_indexing,
+                    _updated_listings=updated_listings,
                 )
                 enlisted_sources.append((listing, client, file_path))
 
@@ -667,7 +711,8 @@ class Catalog:
             return Node.from_row(d)
 
         enlisted_sources: list[tuple[bool, bool, Any]] = []
-        client_config = client_config or self.client_config
+        updated_listings: set[str] = set()
+        client_config = self.client_config if client_config is None else client_config
         for src in sources:  # Opt: parallel
             listing: SavedListing | None
             if src.startswith("ds://"):
@@ -718,7 +763,10 @@ class Catalog:
                 enlisted_sources.append((False, True, indexed_sources))
             else:
                 listing, client, source_path = self.enlist_source(
-                    src, update, client_config=client_config
+                    src,
+                    update,
+                    client_config=client_config,
+                    _updated_listings=updated_listings,
                 )
                 enlisted_sources.append((False, False, (listing, client, source_path)))
 
@@ -1359,6 +1407,7 @@ class Catalog:
 
         from datachain import read_dataset, read_storage
 
+        client_config = self.client_config if client_config is None else client_config
         project = project or self.metastore.default_project
 
         chains = []
@@ -1370,7 +1419,7 @@ class Catalog:
                     source,
                     session=self.session,
                     recursive=recursive,
-                    client_config=client_config or self.client_config,
+                    client_config=client_config,
                 )
 
             chains.append(dc)
@@ -1876,12 +1925,14 @@ class Catalog:
         skip_indexing=False,
         *,
         client_config=None,
+        _updated_listings: set[str] | None = None,
     ) -> Iterator[tuple[DataSource, Iterable[tuple]]]:
         with self.enlist_sources(
             sources,
             update,
             skip_indexing=skip_indexing,
-            client_config=client_config or self.client_config,
+            client_config=client_config,
+            _updated_listings=_updated_listings,
         ) as data_sources:
             if data_sources is None:
                 return
@@ -2233,7 +2284,7 @@ class Catalog:
             with self.enlist_sources(
                 sources,
                 update,
-                client_config=client_config or self.client_config,
+                client_config=client_config,
             ):
                 pass
 
@@ -2261,7 +2312,6 @@ class Catalog:
         This function copies files from cloud sources to local destination directory
         If cloud source is not indexed, or has expired index, it runs indexing
         """
-        client_config = client_config or self.client_config
         node_groups = self.enlist_sources_grouped(
             sources,
             update,
@@ -2316,7 +2366,7 @@ class Catalog:
         with self.enlist_sources(
             sources,
             update,
-            client_config=client_config or self.client_config,
+            client_config=client_config,
         ) as matched_sources:
             if matched_sources is None:
                 return
@@ -2351,7 +2401,7 @@ class Catalog:
         with self.enlist_sources(
             sources,
             update,
-            client_config=client_config or self.client_config,
+            client_config=client_config,
         ) as matched_sources:
             if matched_sources is None:
                 return
@@ -2395,7 +2445,7 @@ class Catalog:
         with self.enlist_sources(
             sources,
             update,
-            client_config=client_config or self.client_config,
+            client_config=client_config,
             only_index=True,
         ):
             pass
