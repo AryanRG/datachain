@@ -130,13 +130,21 @@ def test_dispatcher_runs_more_batches_than_its_buffer(monkeypatch):
         worker.stats.send(FINISHED_STATUS)
 
     dispatcher._run_worker = run_worker
+    errors = []
+
+    def run_dispatcher():
+        try:
+            dispatcher.run_udf_parallel(2, [[i] for i in range(300)])
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
     runner = threading.Thread(
-        target=dispatcher.run_udf_parallel,
-        args=(2, [[i] for i in range(300)]),
+        target=run_dispatcher,
         daemon=True,
     )
     runner.start()
     runner.join(timeout=30)
 
     assert not runner.is_alive()
+    assert not errors
     assert sorted(seen) == list(range(300))
