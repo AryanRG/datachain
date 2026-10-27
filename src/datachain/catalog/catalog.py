@@ -591,12 +591,12 @@ class Catalog:
         _updated_listings: set[str] | None = None,
     ) -> tuple["SavedListing | None", Client, str]:
         from datachain.client.local import FileClient
-        from datachain.lib.dc.storage import (
-            _client_configs,
-            _read_storage_source,
-            _session_for,
-        )
         from datachain.lib.dc.storage_pattern import split_uri_pattern
+        from datachain.lib.storage import (
+            client_configs,
+            prepare_listing,
+            session_for,
+        )
         from datachain.listing import SavedListing
 
         source = os.fspath(source)
@@ -607,16 +607,16 @@ class Catalog:
             storage_uri, path = Client.parse_url(source)
             source = f"{storage_uri}/{path}"
         client_config = self.client_config if client_config is None else client_config
-        session_config, config = _client_configs(
+        session_config, config = client_configs(
             [source], self.session, None, client_config, True
         )
-        session = _session_for(self.session, session_config, False)
+        session = session_for(self.session, session_config, False)
         # Braces are not tree globs: a name with "{" may be an object.
         source_uri, pattern = (
             split_uri_pattern(source) if glob.has_magic(source) else (source, None)
         )
         refreshed = set() if _updated_listings is None else _updated_listings
-        chain, list_uri, list_path = _read_storage_source(
+        chain, list_uri, list_path = prepare_listing(
             source_uri, session, config, refreshed, update=update, column=column
         )
         if pattern is not None:
@@ -700,7 +700,7 @@ class Catalog:
         no_glob: bool = False,
         client_config=None,
     ) -> list[NodeGroup]:
-        from datachain.lib.dc.storage import _session_for
+        from datachain.lib.storage import session_for
         from datachain.listing import SavedListing
         from datachain.query.dataset import DatasetQuery
 
@@ -714,7 +714,7 @@ class Catalog:
         for src in sources:  # Opt: parallel
             listing: SavedListing | None
             if src.startswith("ds://"):
-                session = _session_for(self.session, client_config, False)
+                session = session_for(self.session, client_config, False)
                 (ds_namespace, ds_project, ds_name, ds_version) = parse_dataset_uri(src)
                 dataset = self.get_dataset(
                     ds_name,

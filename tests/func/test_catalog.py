@@ -12,6 +12,7 @@ from datachain.cli import garbage_collect
 from datachain.client import Client
 from datachain.client.local import FileClient
 from datachain.error import DatasetNotFoundError
+from datachain.lib import storage as storage_helpers
 from datachain.lib.file import File
 from datachain.lib.listing import parse_listing_uri
 from tests.data import ENTRIES
@@ -856,7 +857,7 @@ def test_enlist_sources_updates_shared_snapshot_once(
 ):
     ctc = cloud_test_catalog
     uri = f"{ctc.src_uri}/dogs/"
-    write = mocker.spy(dc.lib.dc.storage, "_write_listing")
+    write = mocker.spy(storage_helpers, "write_listing")
     with ctc.catalog.enlist_sources(
         [uri + pattern for pattern in patterns], update=True
     ) as sources:
@@ -938,7 +939,7 @@ def test_enlist_source_keeps_repeated_slashes(cloud_test_catalog):
 def test_grouped_sources_update_shared_snapshot_once(cloud_test_catalog, mocker):
     ctc = cloud_test_catalog
     uri = f"{ctc.src_uri}/dogs/"
-    write = mocker.spy(dc.lib.dc.storage, "_write_listing")
+    write = mocker.spy(storage_helpers, "write_listing")
     groups = ctc.catalog.enlist_sources_grouped([uri, uri], update=True)
     try:
         assert len(groups) == 2

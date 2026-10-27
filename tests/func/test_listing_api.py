@@ -7,6 +7,7 @@ from botocore.exceptions import ClientError
 
 import datachain as dc
 from datachain.client.fsspec import RangeListedClient
+from datachain.lib import storage as storage_helpers
 from datachain.lib.convert.flatten import flatten
 from datachain.lib.dc import DataChain, storage
 from datachain.lib.file import File, FileRow
@@ -318,11 +319,13 @@ def test_listing_probes_and_keeps_active_session_config(catalog, mocker):
     config = {"endpoint_url": "https://minio.example.com"}
     configured = catalog.copy()
     configured.client_config = config
-    probe = mocker.patch.object(storage, "_all_buckets_anonymous", return_value=True)
+    probe = mocker.patch.object(
+        storage_helpers, "_all_buckets_anonymous", return_value=True
+    )
 
     with dc.Session("ingest", catalog=configured):
         lst = dc.list_storage("s3://bucket/data/")
-        _, read_config = storage._client_configs(
+        _, read_config = storage_helpers.client_configs(
             ["s3://bucket/data/"], None, None, None, True
         )
 
@@ -336,7 +339,9 @@ def test_client_config_replaces_the_session_config(catalog, mocker):
     given = {"endpoint_url": "https://b.example.com"}
     configured = catalog.copy()
     configured.client_config = own
-    probe = mocker.patch.object(storage, "_all_buckets_anonymous", return_value=True)
+    probe = mocker.patch.object(
+        storage_helpers, "_all_buckets_anonymous", return_value=True
+    )
     session = dc.Session("explicit", catalog=configured)
 
     lst = dc.list_storage("s3://bucket/data/", session=session, client_config=given)
@@ -349,7 +354,7 @@ def test_client_config_replaces_the_session_config(catalog, mocker):
 
 def test_save_of_an_explicit_session_lists_with_anon(test_session, tmp_dir, mocker):
     (tmp_dir / "a.txt").write_text("a")
-    spy = mocker.spy(storage, "get_listing")
+    spy = mocker.spy(storage_helpers, "get_listing")
 
     chain = dc.list_storage(f"{tmp_dir}/", session=test_session, anon=True).save()
 
@@ -366,7 +371,7 @@ def test_read_storage_of_an_explicit_session_lists_with_anon(
     test_session, tmp_dir, mocker
 ):
     (tmp_dir / "a.txt").write_text("a")
-    spy = mocker.spy(storage, "get_listing")
+    spy = mocker.spy(storage_helpers, "get_listing")
 
     chain = dc.read_storage(f"{tmp_dir}/", session=test_session, anon=True)
 
@@ -377,7 +382,7 @@ def test_read_storage_of_an_explicit_session_lists_with_anon(
 def test_listing_save_lists_a_shared_listing_once(test_session, tmp_dir, mocker):
     (tmp_dir / "a.txt").write_text("a")
     (tmp_dir / "b.csv").write_text("b")
-    write = mocker.spy(storage, "_write_listing")
+    write = mocker.spy(storage_helpers, "write_listing")
 
     saved = dc.list_storage(f"{tmp_dir.as_uri()}/*.{{txt,csv}}", session=test_session)
     chain = saved.save()

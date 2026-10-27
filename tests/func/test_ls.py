@@ -12,6 +12,7 @@ import pytest
 import datachain as dc
 from datachain.cli import ls
 from datachain.config import Config, ConfigLevel
+from datachain.lib import storage as storage_helpers
 from datachain.lib.listing import LISTING_PREFIX, _sanitize_ds_name
 
 
@@ -414,7 +415,7 @@ def test_ls_client_config_override(cloud_test_catalog, capsys, root):
 def test_ls_updates_duplicate_sources_once(cloud_test_catalog, mocker, capsys):
     ctc = cloud_test_catalog
     uri = f"{ctc.src_uri}/dogs/"
-    write = mocker.spy(dc.lib.dc.storage, "_write_listing")
+    write = mocker.spy(storage_helpers, "write_listing")
     ls([uri, uri], catalog=ctc.catalog, update=True)
     assert capsys.readouterr().out.splitlines().count("dog1") == 2
     assert write.call_count == 1
