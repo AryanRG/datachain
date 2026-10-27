@@ -1550,22 +1550,20 @@ def download_callbacks(monkeypatch):
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
 def test_read_parquet_columns_fetch_only_those_columns(
-    cloud_test_catalog_upload, fetched_bytes, download_callbacks, tmp_path
+    cloud_test_catalog_upload, fetched_bytes, download_callbacks
 ):
     ctc = cloud_test_catalog_upload
     rng = np.random.default_rng(0)
     table = pa.table({f"c{i}": rng.random(50_000) for i in range(10)})
-    local = tmp_path / "wide.parquet"
-    pq.write_table(table, local, row_group_size=10_000)
-    ctc.src.fs.put_file(str(local), str(ctc.src / local.name))
-    uri = f"{ctc.src_uri}/{local.name}"
+    file = _put_parquet(ctc, "wide.parquet", table, row_group_size=10_000)
+    uri = f"{ctc.src_uri}/wide.parquet"
     chain = dc.read_parquet(uri, columns=["c3"], session=ctc.session)
     fetched_bytes[0] = 0
 
     values = chain.order_by("source.index").to_values("c3")
 
     assert values == table["c3"].to_pylist()
-    assert 0 < fetched_bytes[0] < local.stat().st_size // 4
+    assert 0 < fetched_bytes[0] < file.size // 4
     assert sum(cb.value for cb in download_callbacks) > 0
 
 
@@ -1582,11 +1580,11 @@ def test_read_parquet_columns_over_http_without_ranges(
     assert sum(cb.value for cb in download_callbacks) > 0
 
 
-def _put_parquet(ctc, tmp_path, name, values):
-    local = tmp_path / name
-    pq.write_table(pa.table({"value": values}), local)
-    ctc.src.fs.put_file(str(local), str(ctc.src / name))
-    return f"{ctc.src_uri}/{name}"
+def _put_parquet(ctc, name, table, **kwargs):
+    buffer = pa.BufferOutputStream()
+    pq.write_table(table, buffer, **kwargs)
+    data = buffer.getvalue().to_pybytes()
+    return File.upload(data, f"{ctc.src_uri}/{name}", ctc.catalog)
 
 
 def _read_recorded(ctc, file):
@@ -1597,13 +1595,10 @@ def _read_recorded(ctc, file):
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
-def test_read_parquet_columns_read_the_recorded_version(
-    cloud_test_catalog_upload, tmp_path
-):
+def test_read_parquet_columns_read_the_recorded_version(cloud_test_catalog_upload):
     ctc = cloud_test_catalog_upload
-    uri = _put_parquet(ctc, tmp_path, "v.parquet", [1])
-    old = File.at(uri, session=ctc.session).resolve()
-    _put_parquet(ctc, tmp_path, "v.parquet", [2, 2, 2])
+    old = _put_parquet(ctc, "v.parquet", pa.table({"value": [1]}))
+    _put_parquet(ctc, "v.parquet", pa.table({"value": [2, 2, 2]}))
 
     assert _read_recorded(ctc, old).to_values("value") == [1]
 
@@ -1611,11 +1606,10 @@ def test_read_parquet_columns_read_the_recorded_version(
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
 def test_read_parquet_columns_read_a_recorded_version_deleted_since(
-    cloud_test_catalog_upload, tmp_path
+    cloud_test_catalog_upload,
 ):
     ctc = cloud_test_catalog_upload
-    uri = _put_parquet(ctc, tmp_path, "d.parquet", [1])
-    old = File.at(uri, session=ctc.session).resolve()
+    old = _put_parquet(ctc, "d.parquet", pa.table({"value": [1]}))
     chain = _read_recorded(ctc, old)
     ctc.src.fs.rm(str(ctc.src / "d.parquet"))
     ctc.catalog.get_client(ctc.src_uri).fs.invalidate_cache()
@@ -1625,13 +1619,10 @@ def test_read_parquet_columns_read_a_recorded_version_deleted_since(
 
 @pytest.mark.parametrize("cloud_type", ["file", "s3", "gs", "azure"], indirect=True)
 @pytest.mark.parametrize("version_aware", [False], indirect=True)
-def test_read_parquet_columns_reject_a_changed_file(
-    cloud_test_catalog_upload, tmp_path
-):
+def test_read_parquet_columns_reject_a_changed_file(cloud_test_catalog_upload):
     ctc = cloud_test_catalog_upload
-    uri = _put_parquet(ctc, tmp_path, "c.parquet", [1])
-    old = File.at(uri, session=ctc.session).resolve()
-    _put_parquet(ctc, tmp_path, "c.parquet", [2, 2, 2])
+    old = _put_parquet(ctc, "c.parquet", pa.table({"value": [1]}))
+    _put_parquet(ctc, "c.parquet", pa.table({"value": [2, 2, 2]}))
 
     with pytest.raises(FileNotFoundError):
         _read_recorded(ctc, old).to_values("value")

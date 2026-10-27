@@ -473,8 +473,10 @@ class Client(ABC):
     ) -> BinaryIO:
         """Open a file, including files in tar archives.
 
-        ``cache_type="none"`` turns off read-ahead for callers that merge their
-        own range reads.
+        ``cache_type`` sets how fsspec buffers reads. The default reads ahead:
+        each read fetches at least a whole block (50 MiB on S3), which suits
+        reading a file in order. ``"none"`` fetches only the bytes asked for, for
+        callers like pyarrow that read a few ranges of a file.
         """
         if use_cache and (cache_path := self.cache.get_path(file)):
             return open(cache_path, mode="rb")
