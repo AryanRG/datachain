@@ -749,6 +749,11 @@ class File(DataModel):
             A ``File`` representing the newly written destination, with
             ``version`` populated on versioned backends.
 
+        Raises:
+            ValueError: If a local destination contains an interior empty
+                segment, such as ``out/d//e.txt``. Local paths, including
+                ``file://`` URIs, must use a single separator between components.
+
         Example:
             ```py
             file.save("/local/output/result.bin")
