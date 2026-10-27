@@ -374,7 +374,7 @@ def test_read_storage_multiple_uris_cache(cloud_test_catalog):
         dc.read_storage([])  # No URIs provided
 
     with patch(
-        "datachain.lib.dc.storage.get_listing", wraps=dc.lib.listing.get_listing
+        "datachain.lib.storage.get_listing", wraps=dc.lib.listing.get_listing
     ) as mock_get_listing:
         chain = dc.read_storage(
             [
