@@ -164,7 +164,7 @@ def rebase_path(
     new_relative_path = f"{parent}{separator}{new_name}"
 
     def _join(base: str) -> str:
-        base = base if new_scheme else _to_posix(base)
+        base = base if new_scheme and new_scheme != "file" else _to_posix(base)
         return (
             new_relative_path
             if base == "."

@@ -157,6 +157,23 @@ def test_rebase_path_keeps_an_empty_segment_for_any_base(new_base, kwargs, expec
     assert rebase_path("s3://src/d//e.txt", "s3://src", new_base, **kwargs) == expected
 
 
+@pytest.mark.parametrize(
+    "new_base,expected",
+    [
+        (r"file:///C:\out", "file:///C:/out/d//e.txt"),
+        ("file:///tmp/out//", "file:///tmp/out/d//e.txt"),
+        ("file:///tmp/./out", "file:///tmp/out/d//e.txt"),
+        ("file:///", "file:///d//e.txt"),
+        (r"\\server\share\out", "//server/share/out/d//e.txt"),
+        ("file:////server/share/out", "file:////server/share/out/d//e.txt"),
+    ],
+)
+def test_rebase_path_normalizes_local_uri_base_without_changing_cloud_key(
+    new_base, expected
+):
+    assert rebase_path("s3://src/d//e.txt", "s3://src", new_base) == expected
+
+
 def test_rebase_path_basic():
     result = rebase_path(
         "/data/audio/folder1/file.wav", "/data/audio", "/output/waveforms"

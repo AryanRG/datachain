@@ -200,19 +200,26 @@ def test_read_storage_preserves_empty_folder_segments(cloud_test_catalog):
         client.fs.pipe_file(f"{client.name}/{prefix}/{key}", key.encode())
     client.fs.invalidate_cache()
     try:
-        for suffix, expected in [
-            ("d/*.txt", ["d/e.txt"]),
-            ("d//*.txt", ["d//e.txt"]),
-            ("d//", ["d//e.txt", "d///f.txt"]),
-            ("d///", ["d///f.txt"]),
-            ("x//y/", ["x//y/z.txt"]),
+        for suffix, recursive, expected in [
+            ("d//", True, ["d//e.txt", "d///f.txt"]),
+            ("d/*.txt", True, ["d/e.txt"]),
+            ("d/", True, ["d/e.txt", "d//e.txt", "d///f.txt"]),
+            ("d/", False, ["d/e.txt"]),
+            ("d//", False, ["d//e.txt"]),
+            ("d//*.txt", True, ["d//e.txt"]),
+            ("d//", True, ["d//e.txt", "d///f.txt"]),
+            ("d///", True, ["d///f.txt"]),
+            ("x//y/", True, ["x//y/z.txt"]),
         ]:
             uri = f"{ctc.src_uri}/{prefix}/{suffix}"
             assert sorted(
-                dc.read_storage(uri, session=ctc.session).to_values("file.path")
+                dc.read_storage(
+                    uri, session=ctc.session, recursive=recursive
+                ).to_values("file.path")
             ) == [f"{prefix}/{k}" for k in sorted(expected)]
             assert sorted(
-                f.path for f in dc.list_storage(uri, session=ctc.session)
+                f.path
+                for f in dc.list_storage(uri, session=ctc.session, recursive=recursive)
             ) == [f"{prefix}/{k}" for k in sorted(expected)]
         parents = dc.read_storage(
             f"{ctc.src_uri}/{prefix}", session=ctc.session

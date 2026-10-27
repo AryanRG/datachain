@@ -187,6 +187,13 @@ def select_paths(dc: D, paths: "PathFilter", column: str = "file") -> D:
     return dc
 
 
+def _listing_folder(path: str) -> str:
+    path = path.lstrip("/")
+    if path.rstrip("/").endswith("*"):
+        path = path.rstrip("/").rstrip("*")
+    return path.removesuffix("/")
+
+
 @dataclass(frozen=True)
 class PathFilter:
     """The paths of a listing that a URI selects: any of ``any_of`` and all of
@@ -199,11 +206,7 @@ class PathFilter:
     @classmethod
     def ls(cls, path: str, recursive: bool | None) -> "PathFilter":
         if not recursive:
-            return cls(
-                any_of=(
-                    ("parent", path.lstrip("/").removesuffix("*").removesuffix("/")),
-                )
-            )
+            return cls(any_of=(("parent", _listing_folder(path)),))
         if not path or path == "/":
             return cls()
         if uses_glob(path):
