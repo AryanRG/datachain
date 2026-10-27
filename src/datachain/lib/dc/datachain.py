@@ -2554,13 +2554,12 @@ class DataChain:
         from pyarrow.dataset import CsvFileFormat, JsonFileFormat
 
         from datachain.lib.arrow import (
-            DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY,
             ArrowGenerator,
             file_schemas,
             fix_pyarrow_format,
+            infer_output,
             merge_schemas,
             read_columns,
-            schema_to_output,
         )
 
         parse_options = kwargs.pop("parse_options", None)
@@ -2581,18 +2580,16 @@ class DataChain:
         if "file" not in self.schema or not self.count():
             raise DatasetPrepareError(self.name, "no files to parse.")
 
-        schema, read = None, None
+        schema, read, written_by_datachain = None, None, None
         col_names = output if isinstance(output, Sequence) else None
         infer = bool(col_names) or not output
         try:
             if infer:
                 schemas = file_schemas(self, **kwargs, parse_options=parse_options)
-                schema, names = merge_schemas(schemas, columns)
-                output, stored = schema_to_output(schema, col_names or names)
-                metadata = schema.metadata or {}
-                if col_names and DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY in metadata:
-                    # Signals renamed by a list output are read from stored names.
-                    read = stored
+                schema, names = merge_schemas(
+                    schemas, columns, source, with_output=bool(col_names)
+                )
+                output, read = infer_output(schema, col_names or names, columns, source)
 
             if isinstance(output, dict):
                 model_name = model_name or column or ""
@@ -2602,9 +2599,8 @@ class DataChain:
                 model = output  # type: ignore[assignment]
 
             if not infer:
-                fields = len(model.model_fields)
-                read = read_columns(
-                    self, columns, fields, **kwargs, parse_options=parse_options
+                read, written_by_datachain = read_columns(
+                    self, columns, model, source, **kwargs, parse_options=parse_options
                 )
         except (ValueError, pa.ArrowTypeError) as e:
             raise DatasetPrepareError(self.name, e) from e
@@ -2629,6 +2625,7 @@ class DataChain:
                 source,
                 nrows,
                 columns=read,
+                written_by_datachain=written_by_datachain,
                 parse_options=parse_options,
                 **kwargs,
             ),
