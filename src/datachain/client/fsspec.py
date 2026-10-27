@@ -470,21 +470,20 @@ class Client(ABC):
         use_cache: bool = True,
         cb: Callback = DEFAULT_CALLBACK,
         block_size: int | None = None,
-        cache_type: str | None = None,
+        read_ahead: bool = True,
     ) -> BinaryIO:
         """Open a file, including files in tar archives.
 
-        ``cache_type`` sets how fsspec buffers reads. The default reads ahead:
-        each read fetches at least a whole block (50 MiB on S3), which suits
-        reading a file in order. ``"none"`` fetches only the bytes asked for, for
-        callers like pyarrow that read a few ranges of a file.
+        With read-ahead, each read fetches at least a whole block (50 MiB on S3),
+        which suits reading a file in order. Without it, each read fetches only
+        the bytes asked for, for callers like pyarrow that read a few ranges.
         """
         if use_cache and (cache_path := self.cache.get_path(file)):
             return open(cache_path, mode="rb")
         assert not file.location
         kwargs = self._version_kwargs(file.version)
-        if cache_type:
-            kwargs["cache_type"] = cache_type
+        if not read_ahead:
+            kwargs["cache_type"] = "none"
         full_path = file.get_fs_path()
         return FileWrapper(
             self.fs.open(full_path, block_size=block_size, **kwargs),

@@ -91,7 +91,7 @@ class _PartialReadHandler(FSSpecHandler):
 
     def open_input_file(self, path):
         f = self.client.open_object(
-            self.file, use_cache=False, cb=self.file._download_cb, cache_type="none"
+            self.file, use_cache=False, cb=self.file._download_cb, read_ahead=False
         )
         return pa.PythonFile(f, mode="r")
 
