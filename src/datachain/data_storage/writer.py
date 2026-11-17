@@ -7,8 +7,10 @@ part's rows, so a writer's committed rows are its ids up to ``max(hi)``.
 """
 
 import logging
+import sys
 import time
 from collections.abc import Iterable
+from contextlib import ExitStack
 from typing import TYPE_CHECKING, Any, Self
 
 import sqlalchemy as sa
@@ -16,6 +18,10 @@ import sqlalchemy as sa
 from datachain.sql.types import Int64
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    import pyarrow as pa
+
     from datachain.data_storage.warehouse import AbstractWarehouse
 
 logger = logging.getLogger("datachain")
@@ -63,6 +69,8 @@ class Writer:
         self.next_id = (writer_no << ID_BITS) + 1  # id of self.rows[0]
         self.part_lo = self.next_id
         self.flush_at = time.monotonic() + self.flush_interval
+        self._resources = ExitStack()
+        self._insert_arrow: Callable[[pa.RecordBatch], None] | None = None
 
     def __enter__(self) -> Self:
         return self
@@ -76,12 +84,39 @@ class Writer:
         except Exception:  # the error in flight says more than this one
             logger.exception("Could not flush committed rows into %s", self.table)
 
-    def extend(self, rows: Iterable[tuple]) -> None:
+    def extend(self, rows: "Iterable[tuple | pa.RecordBatch]") -> None:
         buf, size = self.rows, self.batch_size
+        pa = sys.modules.get("pyarrow")
         for row in rows:
+            if pa is not None and isinstance(row, pa.RecordBatch):
+                self.append_arrow(row)
+                continue
             buf.append(row)
             if len(buf) >= size or time.monotonic() >= self.flush_at:
                 self.flush()
+
+    def append_arrow(self, batch: "pa.RecordBatch") -> None:
+        """Append stored Arrow columns, assigning ids without Python row objects.
+        Source constants, when present, are already columns in the batch."""
+        import numpy as np
+        import pyarrow as pa
+
+        self.flush()
+        if not batch.num_rows:
+            return
+        hi = self.next_id + batch.num_rows
+        columns = list(batch.columns)
+        if self.assign_ids:
+            if hi - 1 - (self.writer_no << ID_BITS) > MAX_SEQ:
+                raise RuntimeError(f"Writer {self.writer_no} ran out of ids")
+            columns.append(pa.array(np.arange(self.next_id, hi, dtype=np.int64)))
+        batch = pa.RecordBatch.from_arrays(columns, names=self.columns)
+        if self._insert_arrow is None:
+            self._insert_arrow = self._resources.enter_context(
+                self.warehouse.arrow_writer(self.table)
+            )
+        self._insert_arrow(batch)
+        self.next_id = hi
 
     def commit(self, part_key: Any) -> None:
         """The part's input is exhausted: its rows, possibly none, are final."""
@@ -115,7 +150,10 @@ class Writer:
         dropped: they have no ledger row, so they would be garbage."""
         if abort and self.assign_ids:
             del self.rows[max(0, self.part_lo - self.next_id) :]
-        self.flush()
+        try:
+            self.flush()
+        finally:
+            self._resources.close()
 
 
 def trim_to_ledger(warehouse: "AbstractWarehouse", table: sa.Table, parts: sa.Table):

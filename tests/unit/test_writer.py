@@ -180,3 +180,57 @@ def test_trim_after_many_claims(warehouse, tables):
     trim_to_ledger(warehouse, table, parts)
     base = last << ID_BITS
     assert rows(warehouse, table) == [(base + 1, 1), (base + 2, 2)]
+
+
+def test_arrow_parts_and_resume(warehouse):
+    import pyarrow as pa
+
+    wh = warehouse
+    table = wh.create_dataset_rows_table("arrow_out", columns=[sa.Column("x", Int)])
+    parts = wh.create_udf_table(parts_columns(), name="arrow_out_parts")
+    values = list(range(10, 2059))
+    try:
+        with wh.writer(table, ["x"], writer_no=3, parts=parts) as w:
+            w.extend([(10,)])
+            w.append_arrow(pa.record_batch([values[1:]], names=["x"]))
+            w.commit(1)
+            w.commit(2)
+            w.append_arrow(pa.record_batch([[9999]], names=["x"]))
+        base = 3 << ID_BITS
+        expected = [(base + i, v) for i, v in enumerate(values, 1)]
+        assert rows(wh, table) == [*expected, (base + len(values) + 1, 9999)]
+        assert ledger(wh, parts) == [
+            (1, 3, base + 1, base + len(values)),
+            (2, 3, base + len(values) + 1, base + len(values)),
+        ]
+        trim_to_ledger(wh, table, parts)
+        assert rows(wh, table) == expected
+    finally:
+        wh.db.drop_table(table)
+        wh.db.drop_table(parts)
+
+
+@skip_if_not_sqlite  # duplicate primary keys abort a SQLite transaction
+def test_arrow_failure_rolls_back_rows_and_leaves_part_uncommitted(warehouse_tmpfile):
+    import pyarrow as pa
+
+    wh = warehouse_tmpfile
+    table = wh.create_dataset_rows_table("arrow_fail", columns=[sa.Column("x", Int)])
+    parts = wh.create_udf_table(parts_columns(), name="arrow_fail_parts")
+    try:
+        with wh.writer(table, ["sys__id", "x"], parts=parts) as w:
+            w.append_arrow(pa.record_batch([[1], [10]], names=["sys__id", "x"]))
+            w.commit(1)
+            with pytest.raises(sqlite3.IntegrityError):
+                # The first row inserts, then the second fails on a duplicate id.
+                w.append_arrow(
+                    pa.record_batch(
+                        [[*range(2, 2049), 1], [20] * 2048],
+                        names=["sys__id", "x"],
+                    )
+                )
+        assert rows(wh, table) == [(1, 10)]
+        assert [r[0] for r in ledger(wh, parts)] == [1]
+    finally:
+        wh.db.drop_table(table)
+        wh.db.drop_table(parts)

@@ -148,6 +148,8 @@ class QueryGeneratorFunc(Protocol):
 class QueryGenerator:
     func: QueryGeneratorFunc
     columns: tuple[ColumnElement, ...]
+    table: "Table | None" = None
+    checkpoint_hash: str | None = None
 
     def only(self, column_names: Sequence[str]) -> Select:
         return self.func(*(c for c in self.columns if c.name in column_names))
@@ -171,9 +173,16 @@ def step_result(
     func: QueryGeneratorFunc,
     columns: Iterable[ColumnElement],
     dependencies: Iterable[DatasetDependencyType] = (),
+    table: "Table | None" = None,
+    checkpoint_hash: str | None = None,
 ) -> "StepResult":
     return StepResult(
-        query_generator=QueryGenerator(func=func, columns=tuple(columns)),
+        query_generator=QueryGenerator(
+            func=func,
+            columns=tuple(columns),
+            table=table,
+            checkpoint_hash=checkpoint_hash,
+        ),
         dependencies=tuple(dependencies),
     )
 
@@ -507,8 +516,13 @@ def process_udf_outputs(
     columns = [*udf.output, "sys__id"] if is_map else list(udf.output)
 
     def _rows(udf_output, progress):
+        pa = sys.modules.get("pyarrow")
         for row in udf_output:
-            progress.add(1)
+            progress.add(
+                row.num_rows
+                if pa is not None and isinstance(row, pa.RecordBatch)
+                else 1
+            )
             yield row
 
     with (
@@ -1112,6 +1126,7 @@ class UDFStep(Step, ABC):
             + UDF_OUTPUT_FORMAT
         ).hexdigest()
 
+        reused = False
         if not checkpoints_enabled:
             if self.partition_by is not None:
                 query, _ = self._prepare_partition_query(
@@ -1159,6 +1174,7 @@ class UDFStep(Step, ABC):
                     output_table, input_table = self._skip_udf(
                         ch, hash_input, query, job
                     )
+                    reused = True
                 except TableMissingError:
                     logger.warning(
                         "UDF(%s) [job=%s run_group=%s]: Output table not found for "
@@ -1184,7 +1200,20 @@ class UDFStep(Step, ABC):
         # Create result query from output table
         input_query = self.get_input_query(input_table.name, query)
         q, cols = self.create_result_query(output_table, input_query)
-        return step_result(q, cols)
+        table = (
+            output_table
+            if self.is_generator
+            and not reused
+            and (
+                not checkpoints_enabled
+                or type(self.udf.inner).__name__ == "ArrowGenerator"
+            )
+            else None
+        )
+        checkpoint_hash = (
+            hash_output if table is not None and checkpoints_enabled else None
+        )
+        return step_result(q, cols, table=table, checkpoint_hash=checkpoint_hash)
 
     def _skip_udf(
         self, checkpoint: Checkpoint, hash_input: str, query, job: Job
@@ -3132,12 +3161,20 @@ class DatasetQuery:
                 )
 
             warehouse = self.catalog.warehouse
-            temp_table_name = warehouse.temp_table_name()
-            temp_table = warehouse.create_dataset_rows_table(
-                temp_table_name, columns=columns
-            )
-            self.temp_table_names.append(temp_table_name)
-            warehouse.insert_into(temp_table, query.select())
+            if (
+                query.table is not None
+                and not self.delta_sources()
+                and self.delta_spec is None
+            ):
+                temp_table = query.table
+                temp_table_name = temp_table.name
+            else:
+                temp_table_name = warehouse.temp_table_name()
+                temp_table = warehouse.create_dataset_rows_table(
+                    temp_table_name, columns=columns
+                )
+                self.temp_table_names.append(temp_table_name)
+                warehouse.insert_into(temp_table, query.select())
 
             dataset = self.catalog.create_dataset(
                 name,
@@ -3157,7 +3194,20 @@ class DatasetQuery:
                 warehouse.rename_table(
                     temp_table, warehouse.dataset_table_name(dataset, version)
                 )
-                self.temp_table_names.remove(temp_table_name)
+                if temp_table_name in self.temp_table_names:
+                    self.temp_table_names.remove(temp_table_name)
+                if (
+                    query.checkpoint_hash
+                    and job_id
+                    and (
+                        ch := self.catalog.metastore.find_checkpoint(
+                            job_id, query.checkpoint_hash
+                        )
+                    )
+                ):
+                    self.catalog.metastore.update_checkpoints(
+                        [ch.id], status=CheckpointStatus.DELETED
+                    )
 
                 # Link this dataset version to the job that created it
                 if job_id:

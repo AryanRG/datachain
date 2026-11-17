@@ -1,8 +1,8 @@
 import logging
 import os
 import sqlite3
-from collections.abc import Callable, Sequence
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import ExitStack, closing, contextmanager
 from functools import cached_property, partial, wraps
 from time import sleep
 from typing import TYPE_CHECKING, Any
@@ -58,6 +58,7 @@ from datachain.sql.types import Array, DateTime
 from datachain.utils import DataChainDir
 
 if TYPE_CHECKING:
+    import pyarrow as pa
     from sqlalchemy import CTE, Subquery
     from sqlalchemy.dialects.sqlite import Insert
     from sqlalchemy.engine.base import Engine
@@ -163,6 +164,13 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         self.db_file = db_file
         self.is_closed = False
         self.max_variable_number = max_variable_number
+
+    @cached_property
+    def is_file_backed(self) -> bool:
+        return any(
+            name == "main" and bool(filename)
+            for _, name, filename in self.db.execute("PRAGMA database_list")
+        )
 
     @classmethod
     def from_db_file(cls, db_file: str | None = None) -> "SQLiteDatabaseEngine":
@@ -759,17 +767,22 @@ _MIN_DATETIME_US = -62_135_596_800_000_000  # 0001-01-01 00:00:00
 _MAX_DATETIME_US = 253_402_300_799_999_999  # 9999-12-31 23:59:59.999999
 
 
-def _encode_datetime_column(column: Any) -> list[Any] | None:
+def _encode_datetime_column(column: Any) -> Any:
     """An Arrow timestamp column as the text `adapt_datetime` stores; None for
     any other column."""
     import pyarrow as pa
     import pyarrow.compute as pc
 
+    if pa.types.is_null(column.type):
+        return column.cast(pa.string())
     if not pa.types.is_timestamp(column.type):
         return None
     # Arrow holds aware timestamps as UTC instants: without the timezone they give
     # the naive UTC text adapt_datetime stores.
-    usts = column.cast(pa.timestamp("us"))
+    try:
+        usts = column.cast(pa.timestamp("us"))
+    except pa.ArrowException:
+        return None
     i64 = usts.view("int64")
     bounds = pc.min_max(i64).as_py()
     if (bounds["min"] is not None and bounds["min"] < _MIN_DATETIME_US) or (
@@ -782,9 +795,38 @@ def _encode_datetime_column(column: Any) -> list[Any] | None:
         )
         usts = i64.view(pa.timestamp("us"))
     text = usts.cast(pa.string())
-    return pc.replace_substring_regex(
-        text, pattern=r"\.000000$", replacement=""
-    ).to_pylist()
+    return pc.replace_substring_regex(text, pattern=r"\.000000$", replacement="")
+
+
+def _encode_scalar_column(python_type: type, column: Any) -> Any:
+    """Only accept Arrow types whose Python values this scalar codec accepts."""
+    import pyarrow as pa
+
+    t = column.type
+    accepted = (
+        pa.types.is_null(t)
+        or (
+            python_type is str
+            and (pa.types.is_string(t) or pa.types.is_large_string(t))
+        )
+        or (python_type is bytes and pa.types.is_binary(t))
+        or (python_type is bool and pa.types.is_boolean(t))
+        or (
+            python_type in (int, float)
+            and (pa.types.is_integer(t) or pa.types.is_boolean(t))
+        )
+        or (python_type is float and pa.types.is_floating(t))
+    )
+    if not accepted:
+        return None
+    target = (
+        pa.int64() if python_type in (int, bool) else pa.from_numpy_dtype(python_type)
+    )
+    try:
+        return column.cast(target)
+    except pa.ArrowException:
+        # uint64 outside SQLite's signed range keeps the tuple path's error.
+        return None
 
 
 class SQLiteWarehouse(AbstractWarehouse):
@@ -883,6 +925,48 @@ class SQLiteWarehouse(AbstractWarehouse):
                 sql = _insert_sql(quote, parts.name, LEDGER_COLUMNS)
                 self.db.executemany(sql, ledger)
 
+    @contextmanager
+    def arrow_writer(
+        self, table: Table
+    ) -> Iterator[Callable[["pa.RecordBatch"], None]]:
+        if (
+            not self.db.db_file
+            or self.db.db_file == ":memory:"
+            or self.db.db.in_transaction
+            or os.name == "nt"
+        ):
+            yield partial(super().insert_arrow, table)
+            return
+        from datachain.data_storage.sqlite_arrow import SQLiteArrowWriter
+
+        # ADBC embeds a different SQLite library. Only a separate process may
+        # open the live file alongside sqlite3 without breaking POSIX locks.
+        with ExitStack() as resources:
+            writer = None
+            rows_seen = 0
+
+            def write(batch):
+                nonlocal writer, rows_seen
+                rows_seen += batch.num_rows
+                if writer is None:
+                    # Starting a process costs more than binding a small batch.
+                    if (
+                        rows_seen < 1024
+                        or not self.db.is_file_backed
+                        or self.db.db.in_transaction
+                    ):
+                        return super(SQLiteWarehouse, self).insert_arrow(table, batch)
+                    writer = resources.enter_context(
+                        closing(SQLiteArrowWriter(self.db.db_file, table.name))
+                    )
+                writer.write(batch)
+
+            yield write
+
+    def insert_arrow(self, table: Table, batch: "pa.RecordBatch") -> None:
+        with self.arrow_writer(table) as write:
+            write(batch)
+
     def claim_writer_no(self, parts: Table) -> int:
         # one statement: SQLite's write lock makes the read of max() atomic
         q = quote(parts.name)
@@ -924,6 +1008,14 @@ class SQLiteWarehouse(AbstractWarehouse):
             )
         if isinstance(sql_type, Array) or getattr(sql_type, "_kind", None) == "array":
             return codec._replace(encode=partial(compose, adapt_array, codec.encode))
+        if codec.kept and (kept := next(iter(codec.kept))) in (
+            str,
+            bytes,
+            bool,
+            int,
+            float,
+        ):
+            return codec._replace(encode_column=partial(_encode_scalar_column, kept))
         return codec
 
     def export_dataset_table(

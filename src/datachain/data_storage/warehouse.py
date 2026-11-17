@@ -6,6 +6,7 @@ import string
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Self, cast
 
 import attrs
@@ -29,6 +30,7 @@ from datachain.sql.types import SQLType
 from datachain.utils import LIKE_ESCAPE_CHAR, batched, safe_closing, sql_escape_like
 
 if TYPE_CHECKING:
+    import pyarrow as pa
     from sqlalchemy.sql._typing import (
         _ColumnsClauseArgument,
         _FromClauseArgument,
@@ -463,6 +465,30 @@ class AbstractWarehouse(ABC, Serializable):
     ) -> Writer:
         """A writer of rows into table, with ids and a ledger: see ``Writer``."""
         return Writer(self, table, columns, writer_no, parts, batch_size)
+
+    def insert_arrow(
+        self,
+        table: sa.Table,
+        batch: "pa.RecordBatch",
+    ) -> None:
+        """Insert a batch of stored values, including explicit sys__id.
+
+        Native implementations must finish the insert before returning: the
+        Writer publishes the part's ledger row only after its batches succeed.
+        Warehouses without Arrow support use the existing block contract.
+        """
+        self.insert_block(
+            table,
+            batch.schema.names,
+            list(zip(*(c.to_pylist() for c in batch.columns), strict=True)),
+        )
+
+    @contextmanager
+    def arrow_writer(
+        self, table: sa.Table
+    ) -> Iterator[Callable[["pa.RecordBatch"], None]]:
+        """Keep native resources for one Writer; each call commits before returning."""
+        yield lambda batch: self.insert_arrow(table, batch)
 
     @abstractmethod
     def insert_block(
