@@ -35,7 +35,7 @@ class TypeCodec(NamedTuple):
     encode: Callable[[Any], Any]
     default: Any = None
     decode: Callable[[Any], Any] | None = None
-    encode_column: "Callable[[pa.Array], list[Any] | None] | None" = None
+    encode_column: "Callable[[pa.Array], pa.Array | None] | None" = None
 
 
 class RowEncodeError(ValueError):
@@ -119,28 +119,42 @@ class RowCodec:
             return tuple(values)
         return row if type(row) is tuple else tuple(row)
 
-    def encode_arrow(self, batch: "pa.RecordBatch") -> list[tuple]:
-        """An Arrow batch of leaf columns as stored tuples; missing trailing
-        columns are None."""
+    def encode_arrow(self, batch: "pa.RecordBatch") -> "pa.RecordBatch | list[tuple]":
+        """Stored columns if every codec supports Arrow, otherwise stored tuples.
+        Missing trailing columns are None."""
+        import pyarrow as pa
+        import pyarrow.compute as pc
+
         n, columns = batch.num_rows, []
         if not self.codecs:
             return [()] * n
         for i, codec in enumerate(self.codecs):
             if i >= batch.num_columns:
-                columns.append([codec.default] * n)
-                continue
-            column = batch.column(i)
-            if hasattr(column, "dictionary_decode"):
-                column = column.dictionary_decode()
-            if codec.encode_column and (values := codec.encode_column(column)):
-                if codec.default is not None:  # stored already, but for None
-                    values = [codec.default if v is None else v for v in values]
+                column = pa.nulls(n)
+            else:
+                column = batch.column(i)
+                if hasattr(column, "dictionary_decode"):
+                    column = column.dictionary_decode()
+            values = codec.encode_column(column) if codec.encode_column else None
+            if values is not None:
+                if values.null_count and codec.default is not None:
+                    default = self._encode_one(i, codec, codec.default)
+                    values = pc.fill_null(values, pa.scalar(default).cast(values.type))
+            elif i >= batch.num_columns:
+                values = [codec.default] * n
             else:
                 values = column.to_pylist()
                 kept = self._kept[i]
                 if kept is not None and not set(map(type, values)) <= kept:
                     values = [self._encode_one(i, codec, v) for v in values]
             columns.append(values)
+        if all(isinstance(c, pa.Array) for c in columns):
+            names = [
+                *batch.schema.names[: len(columns)],
+                *(str(i) for i in range(batch.num_columns, len(columns))),
+            ]
+            return pa.RecordBatch.from_arrays(columns, names=names)
+        columns = [c.to_pylist() if isinstance(c, pa.Array) else c for c in columns]
         return list(zip(*columns, strict=True))
 
     def decode_columns(self, columns: list[Sequence[Any]]) -> list[Sequence[Any]]:

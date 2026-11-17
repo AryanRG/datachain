@@ -144,6 +144,7 @@ class QueryGeneratorFunc(Protocol):
 class QueryGenerator:
     func: QueryGeneratorFunc
     columns: tuple[ColumnElement, ...]
+    table: "Table | None" = None
 
     def only(self, column_names: Sequence[str]) -> Select:
         return self.func(*(c for c in self.columns if c.name in column_names))
@@ -167,9 +168,10 @@ def step_result(
     func: QueryGeneratorFunc,
     columns: Iterable[ColumnElement],
     dependencies: Iterable[DatasetDependencyType] = (),
+    table: "Table | None" = None,
 ) -> "StepResult":
     return StepResult(
-        query_generator=QueryGenerator(func=func, columns=tuple(columns)),
+        query_generator=QueryGenerator(func=func, columns=tuple(columns), table=table),
         dependencies=tuple(dependencies),
     )
 
@@ -503,8 +505,13 @@ def process_udf_outputs(
     columns = [*udf.output, "sys__id"] if is_map else list(udf.output)
 
     def _rows(udf_output, progress):
+        pa = sys.modules.get("pyarrow")
         for row in udf_output:
-            progress.add(1)
+            progress.add(
+                row.num_rows
+                if pa is not None and isinstance(row, pa.RecordBatch)
+                else 1
+            )
             yield row
 
     with (
@@ -1108,6 +1115,7 @@ class UDFStep(Step, ABC):
             + UDF_OUTPUT_FORMAT
         ).hexdigest()
 
+        reused = False
         if not checkpoints_enabled:
             if self.partition_by is not None:
                 query, _ = self._prepare_partition_query(
@@ -1155,6 +1163,7 @@ class UDFStep(Step, ABC):
                     output_table, input_table = self._skip_udf(
                         ch, hash_input, query, job
                     )
+                    reused = True
                 except TableMissingError:
                     logger.warning(
                         "UDF(%s) [job=%s run_group=%s]: Output table not found for "
@@ -1180,7 +1189,8 @@ class UDFStep(Step, ABC):
         # Create result query from output table
         input_query = self.get_input_query(input_table.name, query)
         q, cols = self.create_result_query(output_table, input_query)
-        return step_result(q, cols)
+        table = output_table if self.is_generator and not reused else None
+        return step_result(q, cols, table=table)
 
     def _skip_udf(
         self, checkpoint: Checkpoint, hash_input: str, query, job: Job
@@ -1243,6 +1253,10 @@ class UDFStep(Step, ABC):
         # bytes instead of str, DateTime defaults break CREATE TABLE downstream).
         # Restore SQLTypes from our known schema so downstream query generation
         # decodes values correctly.
+        if not self.warehouse.db.has_table(name) and (
+            renamed := self.warehouse._renamed_tables.get(name)
+        ):
+            name = renamed
         known_types = {
             **dict(self.udf.output.items()),
             **{c.name: c.type for c in self.warehouse.dataset_row_cls.sys_columns()},
@@ -3123,12 +3137,20 @@ class DatasetQuery:
                 )
 
             warehouse = self.catalog.warehouse
-            temp_table_name = warehouse.temp_table_name()
-            temp_table = warehouse.create_dataset_rows_table(
-                temp_table_name, columns=columns
-            )
-            self.temp_table_names.append(temp_table_name)
-            warehouse.insert_into(temp_table, query.select())
+            if (
+                query.table is not None
+                and not self.delta_sources()
+                and self.delta_spec is None
+            ):
+                temp_table = query.table
+                temp_table_name = temp_table.name
+            else:
+                temp_table_name = warehouse.temp_table_name()
+                temp_table = warehouse.create_dataset_rows_table(
+                    temp_table_name, columns=columns
+                )
+                self.temp_table_names.append(temp_table_name)
+                warehouse.insert_into(temp_table, query.select())
 
             dataset = self.catalog.create_dataset(
                 name,
@@ -3144,30 +3166,36 @@ class DatasetQuery:
                 **kwargs,
             )
             version = dataset.versions[0].version
+            renamed = None
             try:
-                warehouse.rename_table(
+                if dependencies:
+                    self._set_dependencies(dependencies)
+                renamed = warehouse.rename_table(
                     temp_table, warehouse.dataset_table_name(dataset, version)
                 )
-                self.temp_table_names.remove(temp_table_name)
+                if temp_table_name in self.temp_table_names:
+                    self.temp_table_names.remove(temp_table_name)
 
                 # Link this dataset version to the job that created it
                 if job_id:
                     self.catalog.metastore.link_dataset_version_to_job(
                         dataset.get_version(version).id, job_id, is_creator=True
                     )
-                if dependencies:
-                    self._set_dependencies(dependencies)
                 self._add_dependencies(dataset, version)  # type: ignore [arg-type]
 
                 # Mark as COMPLETE only after all operations succeed.
                 self.catalog.complete_dataset_version(
                     dataset, version, expected_job_id=job_id
                 )
+                renamed = None
             except BaseException:
                 # Give back the reservation, as if it was never made. It is
                 # removed only while still CREATED and ours: an interrupt right
                 # after completion must not remove a published version.
                 with contextlib.suppress(Exception):
+                    if query.table is not None and renamed is not None:
+                        warehouse.rename_table(renamed, temp_table_name)
+                        warehouse._renamed_tables.pop(temp_table_name, None)
                     self.catalog.release_reservation(dataset, version, job_id)
                 raise
         finally:

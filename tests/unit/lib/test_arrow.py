@@ -640,3 +640,111 @@ def test_file_schemas_no_files(test_session):
 )
 def test_is_parquet(format, expected):
     assert is_parquet(format) is expected
+
+
+@skip_if_not_sqlite  # asserts ADBC writes and SQLite table publication
+@pytest.mark.parametrize("format", ["parquet", "csv", "json"])
+@pytest.mark.parametrize("source", [False, True])
+def test_tabular_load_uses_native_arrow(
+    tmp_path, test_session_tmpfile, mocker, format, source
+):
+    from datachain.data_storage.sqlite import SQLiteWarehouse
+    from datachain.data_storage.sqlite_arrow import SQLiteArrowWriter
+
+    path = tmp_path / f"native.{format}"
+    frame = pd.DataFrame({"n": list(range(2048)), "text": ["one"] * 2048})
+    if format == "parquet":
+        frame.to_parquet(path, index=False)
+    elif format == "csv":
+        frame.to_csv(path, index=False)
+    else:
+        frame.to_json(path, orient="records", lines=True)
+    native = mocker.spy(SQLiteArrowWriter, "write")
+    sinks = mocker.spy(SQLiteWarehouse, "arrow_writer")
+    copies = mocker.spy(SQLiteWarehouse, "insert_into")
+    renames = mocker.spy(SQLiteWarehouse, "rename_table")
+    result = (
+        dc.read_storage(path.as_uri(), session=test_session_tmpfile)
+        .parse_tabular(format=format, source=source)
+        .save("native")
+    )
+    if os.name == "nt":
+        native.assert_not_called()
+    else:
+        assert native.call_count >= 1
+    warehouse = test_session_tmpfile.catalog.warehouse
+    target = warehouse.dataset_table_name(result.dataset, result.version)
+    assert len(sinks.call_args_list) == 1
+    work_table = sinks.call_args.args[1].name
+    rename_pairs = [
+        (call.args[1].name, call.args[2]) for call in renames.call_args_list
+    ]
+    assert any(
+        src == work_table and (mid, target) in rename_pairs for src, mid in rename_pairs
+    )
+    assert all(call.args[1].name != target for call in copies.call_args_list)
+    assert result.order_by("n").to_list("n", "text") == [
+        (i, "one") for i in range(2048)
+    ]
+    if source:
+        assert [
+            row.read() for row in result.order_by("n").limit(3).to_values("source")
+        ] == frame.head(3).to_dict("records")
+
+
+@skip_if_not_sqlite  # includes SQLite's PRAGMA integrity_check
+def test_native_arrow_parallel_files(tmp_path, test_session_tmpfile):
+    for i in range(8):
+        pq.write_table(
+            pa.table({"n": list(range(i * 100, (i + 1) * 100))}),
+            tmp_path / f"part{i}.parquet",
+        )
+    result = (
+        dc.read_parquet(f"{tmp_path.as_uri()}/*.parquet", session=test_session_tmpfile)
+        .settings(parallel=2)
+        .save("parallel_arrow")
+    )
+    assert result.order_by("n").to_values("n") == list(range(800))
+    db = test_session_tmpfile.catalog.warehouse.db
+    assert db.execute_str("PRAGMA integrity_check").fetchall() == [("ok",)]
+
+
+def test_tabular_save_second_dataset_after_direct_rename(
+    tmp_path, test_session, mocker, caplog
+):
+    from datachain.lib.arrow import ArrowGenerator
+
+    path = tmp_path / "data.parquet"
+    pq.write_table(pa.table({"n": [1, 2, 3]}), path)
+    chain = dc.read_parquet(path.as_uri(), session=test_session)
+    process = mocker.spy(ArrowGenerator, "process")
+
+    # Failure in create_dataset (before rename) preserves the UDF checkpoint table.
+    fail = mocker.patch.object(
+        test_session.catalog, "create_dataset", side_effect=RuntimeError("boom")
+    )
+    with pytest.raises(RuntimeError, match="boom"):
+        chain.save("ds1")
+    assert process.call_count == 1
+    mocker.stop(fail)
+
+    # Failure after rename restores the UDF checkpoint table.
+    fail_complete = mocker.patch.object(
+        test_session.catalog,
+        "complete_dataset_version",
+        side_effect=RuntimeError("publish boom"),
+    )
+    with pytest.raises(RuntimeError, match="publish boom"):
+        chain.save("ds1")
+    assert process.call_count == 1
+    mocker.stop(fail_complete)
+
+    caplog.clear()
+    ds1 = chain.save("ds1")
+    filtered = chain.filter(dc.C("n") > 1).save("filtered")
+    ds2 = chain.save("ds2")
+    assert process.call_count == 1  # Reused across save, filter, and second save!
+    assert "Output table not found for checkpoint" not in caplog.text
+    assert ds1.order_by("n").to_values("n") == [1, 2, 3]
+    assert filtered.order_by("n").to_values("n") == [2, 3]
+    assert ds2.order_by("n").to_values("n") == [1, 2, 3]
